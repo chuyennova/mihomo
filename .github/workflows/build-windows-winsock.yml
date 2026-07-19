@@ -37,7 +37,7 @@ jobs:
       - name: Prepare build variables
         shell: bash
         run: |
-          echo "VERSION=v1.19.29-windows-winsock-$(git rev-parse --short HEAD)" >> "$GITHUB_ENV"
+          echo "VERSION=v1.19.29-windows-winsock-v2-$(git rev-parse --short HEAD)" >> "$GITHUB_ENV"
           echo "BUILDTIME=$(date -u +'%Y-%m-%dT%H:%M:%SZ')" >> "$GITHUB_ENV"
           echo "GOTOOLCHAIN=local" >> "$GITHUB_ENV"
           echo "GOFLAGS=-mod=mod" >> "$GITHUB_ENV"
@@ -62,7 +62,7 @@ jobs:
           CGO_ENABLED: "0"
           GOOS: windows
           GOARCH: amd64
-          GOAMD64: v1
+          GOAMD64: v2
         run: |
           mkdir -p dist
           go env
@@ -80,17 +80,17 @@ jobs:
           unzip -j wintun.zip "wintun/LICENSE.txt" -d dist
           mv dist/LICENSE.txt dist/LICENSE-wintun.txt
           (cd dist && sha256sum verge-mihomo.exe wintun.dll > SHA256SUMS.txt)
-          (cd dist && zip -9 verge-mihomo-windows-amd64.zip verge-mihomo.exe wintun.dll LICENSE-wintun.txt SHA256SUMS.txt)
+          (cd dist && zip -9 verge-mihomo-windows-amd64-v2.zip verge-mihomo.exe wintun.dll LICENSE-wintun.txt SHA256SUMS.txt)
 
       - name: Upload artifact
         uses: actions/upload-artifact@v7
         with:
-          name: verge-mihomo-windows-amd64
+          name: verge-mihomo-windows-amd64-v2
           path: |
             dist/verge-mihomo.exe
             dist/wintun.dll
             dist/LICENSE-wintun.txt
             dist/SHA256SUMS.txt
-            dist/verge-mihomo-windows-amd64.zip
+            dist/verge-mihomo-windows-amd64-v2.zip
           if-no-files-found: error
           retention-days: 14
