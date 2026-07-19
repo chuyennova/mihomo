@@ -1,0 +1,90 @@
+name: Build Windows Winsock WireGuard
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - windows-winsock-v1.19.29
+    paths:
+      - "adapter/outbound/wireguard.go"
+      - "adapter/outbound/wireguard_system_windows.go"
+      - "adapter/outbound/wireguard_system_other.go"
+      - "go.mod"
+      - "go.sum"
+      - ".github/workflows/build-windows-winsock.yml"
+
+concurrency:
+  group: windows-winsock-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-windows-amd64:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up Go 1.26
+        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c
+        with:
+          go-download-base-url: https://github.com/MetaCubeX/go/releases/download/build
+          go-version: "1.26"
+          cache: true
+
+      - name: Prepare build variables
+        shell: bash
+        run: |
+          echo "VERSION=v1.19.29-windows-winsock-$(git rev-parse --short HEAD)" >> "$GITHUB_ENV"
+          echo "BUILDTIME=$(date -u +'%Y-%m-%dT%H:%M:%SZ')" >> "$GITHUB_ENV"
+          echo "GOTOOLCHAIN=local" >> "$GITHUB_ENV"
+          echo "GOFLAGS=-mod=readonly" >> "$GITHUB_ENV"
+
+      - name: Update CA bundle
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ca-certificates curl unzip zip
+          sudo update-ca-certificates
+          cp -f /etc/ssl/certs/ca-certificates.crt component/ca/ca-certificates.crt
+
+      - name: Build Windows 10 amd64 compatible
+        shell: bash
+        env:
+          CGO_ENABLED: "0"
+          GOOS: windows
+          GOARCH: amd64
+          GOAMD64: v1
+        run: |
+          mkdir -p dist
+          go env
+          go build -v -tags "with_gvisor" -trimpath \
+            -ldflags "-extldflags --static -X 'github.com/metacubex/mihomo/constant.Version=${VERSION}' -X 'github.com/metacubex/mihomo/constant.BuildTime=${BUILDTIME}' -w -s -buildid=" \
+            -o dist/verge-mihomo.exe .
+
+      - name: Add Wintun runtime
+        shell: bash
+        run: |
+          curl --fail --location --retry 3 \
+            https://www.wintun.net/builds/wintun-0.14.1.zip \
+            --output wintun.zip
+          unzip -j wintun.zip "wintun/bin/amd64/wintun.dll" -d dist
+          unzip -j wintun.zip "wintun/LICENSE.txt" -d dist
+          mv dist/LICENSE.txt dist/LICENSE-wintun.txt
+          (cd dist && sha256sum verge-mihomo.exe wintun.dll > SHA256SUMS.txt)
+          (cd dist && zip -9 verge-mihomo-windows-amd64.zip verge-mihomo.exe wintun.dll LICENSE-wintun.txt SHA256SUMS.txt)
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: verge-mihomo-windows-amd64
+          path: |
+            dist/verge-mihomo.exe
+            dist/wintun.dll
+            dist/LICENSE-wintun.txt
+            dist/SHA256SUMS.txt
+            dist/verge-mihomo-windows-amd64.zip
+          if-no-files-found: error
+          retention-days: 14
