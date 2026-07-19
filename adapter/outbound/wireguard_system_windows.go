@@ -65,15 +65,6 @@ type windowsWireGuardTunDevice struct {
 
 var _ singWireGuard.Device = (*windowsWireGuardTunDevice)(nil)
 
-func wireGuardShouldDeferDeviceCreation() bool {
-	for _, argument := range os.Args[1:] {
-		if argument == "-t" {
-			return true
-		}
-	}
-	return false
-}
-
 func newWireGuardTunDevice(option WireGuardOption, localPrefixes []netip.Prefix, mtu uint32) (_ singWireGuard.Device, err error) {
 	if mtu == 0 {
 		return nil, fmt.Errorf("Windows WireGuard system stack requires a non-zero MTU")

@@ -43,8 +43,12 @@ type WireGuard struct {
 	resolver  resolver.Resolver
 
 	initOk        atomic.Bool
+	closed        atomic.Bool
 	initMutex     sync.Mutex
-	initErr       error
+	initErr       error // permanent until profile reload (for example invalid IPC configuration)
+	deviceErr     error // transient Wintun creation error, retried with per-outbound backoff
+	deviceRetryAt time.Time
+	deviceBackoff time.Duration
 	option        WireGuardOption
 	connectAddr   M.Socksaddr
 	localPrefixes []netip.Prefix
@@ -265,10 +269,11 @@ func NewWireGuard(option WireGuardOption) (*WireGuard, error) {
 	if len(outbound.localPrefixes) == 0 {
 		return nil, E.New("missing local address")
 	}
-	// Keep `mihomo -t` side-effect free because Clash Verge performs config
-	// validation in a normal user process. The real runtime/service pre-creates
-	// the Windows device while loading the config so the first SOCKS connection
-	// does not pay the Wintun and WireGuard device creation cost.
+	// Defer Wintun/WireGuard device creation until the first real connection.
+	// Clash Verge validates profiles with `mihomo -t` in a normal user process.
+	// Creating a Wintun adapter while merely parsing the configuration makes
+	// validation fail with ERROR_ACCESS_DENIED. Lazy creation keeps `-t`
+	// side-effect free, while the elevated runtime/service creates the adapter.
 	outbound.mtu = uint32(mtu)
 
 	var has6 bool
@@ -293,23 +298,43 @@ func NewWireGuard(option WireGuardOption) (*WireGuard, error) {
 		})
 	}
 
-	if !wireGuardShouldDeferDeviceCreation() {
-		if err = outbound.ensureDevice(); err != nil {
-			return nil, err
-		}
-	}
-
 	return outbound, nil
 }
 
-func (w *WireGuard) ensureDevice() error {
+const (
+	wireGuardDeviceRetryMin = time.Second
+	wireGuardDeviceRetryMax = 30 * time.Second
+)
+
+// ensureDeviceLocked lazily creates only this outbound's Wintun and WireGuard
+// device. The caller must hold initMutex. No global lock or shared device is
+// used, so a failure here cannot initialize, redirect, or stop another proxy.
+func (w *WireGuard) ensureDeviceLocked() error {
+	if w.closed.Load() {
+		return net.ErrClosed
+	}
 	if w.tunDevice != nil && w.device != nil {
 		return nil
 	}
 
+	now := time.Now()
+	if w.deviceErr != nil && now.Before(w.deviceRetryAt) {
+		return w.deviceErr
+	}
+
 	tunDevice, err := newWireGuardTunDevice(w.option, w.localPrefixes, w.mtu)
 	if err != nil {
-		return E.Cause(err, "create WireGuard device")
+		w.deviceErr = E.Cause(err, "create WireGuard device")
+		if w.deviceBackoff == 0 {
+			w.deviceBackoff = wireGuardDeviceRetryMin
+		} else {
+			w.deviceBackoff *= 2
+			if w.deviceBackoff > wireGuardDeviceRetryMax {
+				w.deviceBackoff = wireGuardDeviceRetryMax
+			}
+		}
+		w.deviceRetryAt = now.Add(w.deviceBackoff)
+		return w.deviceErr
 	}
 
 	logger := &device.Logger{
@@ -327,6 +352,26 @@ func (w *WireGuard) ensureDevice() error {
 		w.device = amnezia.NewDevice(w.tunDevice, w.bind, logger, w.option.Workers)
 	} else {
 		w.device = device.NewDevice(w.tunDevice, w.bind, logger, w.option.Workers)
+	}
+	w.deviceErr = nil
+	w.deviceRetryAt = time.Time{}
+	w.deviceBackoff = 0
+	return nil
+}
+
+// closeDeviceLocked closes only this outbound's device. device.Close also
+// closes the underlying TUN; the direct TUN close is only a partial-init guard.
+func (w *WireGuard) closeDeviceLocked() error {
+	if w.device != nil {
+		w.device.Close()
+		w.device = nil
+		w.tunDevice = nil
+		return nil
+	}
+	if w.tunDevice != nil {
+		err := w.tunDevice.Close()
+		w.tunDevice = nil
+		return err
 	}
 	return nil
 }
@@ -354,12 +399,20 @@ func (w *WireGuard) init(ctx context.Context) error {
 }
 
 func (w *WireGuard) init0(ctx context.Context) error {
+	if w.closed.Load() {
+		return net.ErrClosed
+	}
 	if w.initOk.Load() {
 		return nil
 	}
 	w.initMutex.Lock()
 	defer w.initMutex.Unlock()
-	// double check like sync.Once
+	// Double check after taking this outbound's private lock. Concurrent first
+	// requests for the same port share one creation; other WireGuard outbounds
+	// use different locks and continue independently.
+	if w.closed.Load() {
+		return net.ErrClosed
+	}
 	if w.initOk.Load() {
 		return nil
 	}
@@ -380,21 +433,24 @@ func (w *WireGuard) init0(ctx context.Context) error {
 		log.SingLogger.Trace(fmt.Sprintf("[WG](%s) created wireguard ipc conf: \n %s", w.option.Name, ipcConf))
 	}
 
-	if err = w.ensureDevice(); err != nil {
-		w.initErr = err
-		return w.initErr
+	if err = w.ensureDeviceLocked(); err != nil {
+		// Wintun creation failures are runtime-local and may be temporary. Do not
+		// poison this outbound permanently and never touch another outbound.
+		return err
 	}
 
 	err = w.device.IpcSet(ipcConf)
 	if err != nil {
 		w.initErr = E.Cause(err, "setup wireguard")
+		_ = w.closeDeviceLocked()
 		return w.initErr
 	}
 	w.serverAddrTime.Store(time.Now())
 
 	err = w.tunDevice.Start()
 	if err != nil {
-		w.initErr = err
+		w.initErr = E.Cause(err, "start wireguard device")
+		_ = w.closeDeviceLocked()
 		return w.initErr
 	}
 
@@ -571,12 +627,15 @@ func (w *WireGuard) genIpcConf(ctx context.Context, updateOnly bool) (string, er
 	return ipcConf, nil
 }
 
-// Close implements C.ProxyAdapter
+// Close implements C.ProxyAdapter.
 func (w *WireGuard) Close() error {
-	if w.device != nil {
-		w.device.Close()
+	w.initMutex.Lock()
+	defer w.initMutex.Unlock()
+	if w.closed.Swap(true) {
+		return nil
 	}
-	return nil
+	w.initOk.Store(false)
+	return w.closeDeviceLocked()
 }
 
 func (w *WireGuard) DialContext(ctx context.Context, metadata *C.Metadata) (_ C.Conn, err error) {

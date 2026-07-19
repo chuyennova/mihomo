@@ -11,7 +11,3 @@ import (
 func newWireGuardTunDevice(_ WireGuardOption, localPrefixes []netip.Prefix, mtu uint32) (wireguard.Device, error) {
 	return wireguard.NewStackDevice(localPrefixes, mtu)
 }
-
-func wireGuardShouldDeferDeviceCreation() bool {
-	return false
-}
