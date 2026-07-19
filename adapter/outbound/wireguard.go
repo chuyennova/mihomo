@@ -48,6 +48,7 @@ type WireGuard struct {
 	option        WireGuardOption
 	connectAddr   M.Socksaddr
 	localPrefixes []netip.Prefix
+	mtu           uint32
 
 	serverAddrMap   map[M.Socksaddr]netip.AddrPort
 	serverAddrTime  atomic.TypedValue[time.Time]
@@ -264,24 +265,12 @@ func NewWireGuard(option WireGuardOption) (*WireGuard, error) {
 	if len(outbound.localPrefixes) == 0 {
 		return nil, E.New("missing local address")
 	}
-	outbound.tunDevice, err = newWireGuardTunDevice(option, outbound.localPrefixes, uint32(mtu))
-	if err != nil {
-		return nil, E.Cause(err, "create WireGuard device")
-	}
-	logger := &device.Logger{
-		Verbosef: func(format string, args ...interface{}) {
-			log.SingLogger.Debug(fmt.Sprintf("[WG](%s) %s", option.Name, fmt.Sprintf(format, args...)))
-		},
-		Errorf: func(format string, args ...interface{}) {
-			log.SingLogger.Error(fmt.Sprintf("[WG](%s) %s", option.Name, fmt.Sprintf(format, args...)))
-		},
-	}
-	if option.AmneziaWGOption != nil {
-		outbound.bind.SetParseReserved(false) // AmneziaWG don't need parse reserved
-		outbound.device = amnezia.NewDevice(outbound.tunDevice, outbound.bind, logger, option.Workers)
-	} else {
-		outbound.device = device.NewDevice(outbound.tunDevice, outbound.bind, logger, option.Workers)
-	}
+	// Defer Wintun/WireGuard device creation until the first real connection.
+	// Clash Verge validates profiles with `mihomo -t` in a normal user process.
+	// Creating a Wintun adapter while merely parsing the configuration makes
+	// validation fail with ERROR_ACCESS_DENIED. Lazy creation keeps `-t`
+	// side-effect free, while the elevated runtime/service creates the adapter.
+	outbound.mtu = uint32(mtu)
 
 	var has6 bool
 	for _, address := range outbound.localPrefixes {
@@ -306,6 +295,35 @@ func NewWireGuard(option WireGuardOption) (*WireGuard, error) {
 	}
 
 	return outbound, nil
+}
+
+func (w *WireGuard) ensureDevice() error {
+	if w.tunDevice != nil && w.device != nil {
+		return nil
+	}
+
+	tunDevice, err := newWireGuardTunDevice(w.option, w.localPrefixes, w.mtu)
+	if err != nil {
+		return E.Cause(err, "create WireGuard device")
+	}
+
+	logger := &device.Logger{
+		Verbosef: func(format string, args ...interface{}) {
+			log.SingLogger.Debug(fmt.Sprintf("[WG](%s) %s", w.option.Name, fmt.Sprintf(format, args...)))
+		},
+		Errorf: func(format string, args ...interface{}) {
+			log.SingLogger.Error(fmt.Sprintf("[WG](%s) %s", w.option.Name, fmt.Sprintf(format, args...)))
+		},
+	}
+
+	w.tunDevice = tunDevice
+	if w.option.AmneziaWGOption != nil {
+		w.bind.SetParseReserved(false) // AmneziaWG doesn't need reserved parsing.
+		w.device = amnezia.NewDevice(w.tunDevice, w.bind, logger, w.option.Workers)
+	} else {
+		w.device = device.NewDevice(w.tunDevice, w.bind, logger, w.option.Workers)
+	}
+	return nil
 }
 
 func (w *WireGuard) resolve(ctx context.Context, address M.Socksaddr) (netip.AddrPort, error) {
@@ -356,6 +374,12 @@ func (w *WireGuard) init0(ctx context.Context) error {
 	if debug.Enabled {
 		log.SingLogger.Trace(fmt.Sprintf("[WG](%s) created wireguard ipc conf: \n %s", w.option.Name, ipcConf))
 	}
+
+	if err = w.ensureDevice(); err != nil {
+		w.initErr = err
+		return w.initErr
+	}
+
 	err = w.device.IpcSet(ipcConf)
 	if err != nil {
 		w.initErr = E.Cause(err, "setup wireguard")
