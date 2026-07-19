@@ -40,7 +40,7 @@ jobs:
           echo "VERSION=v1.19.29-windows-winsock-$(git rev-parse --short HEAD)" >> "$GITHUB_ENV"
           echo "BUILDTIME=$(date -u +'%Y-%m-%dT%H:%M:%SZ')" >> "$GITHUB_ENV"
           echo "GOTOOLCHAIN=local" >> "$GITHUB_ENV"
-          echo "GOFLAGS=-mod=readonly" >> "$GITHUB_ENV"
+          echo "GOFLAGS=-mod=mod" >> "$GITHUB_ENV"
 
       - name: Update CA bundle
         shell: bash
@@ -49,6 +49,12 @@ jobs:
           sudo apt-get install -y ca-certificates curl unzip zip
           sudo update-ca-certificates
           cp -f /etc/ssl/certs/ca-certificates.crt component/ca/ca-certificates.crt
+
+      - name: Normalize Go modules
+        shell: bash
+        run: |
+          go mod tidy
+          go mod download
 
       - name: Build Windows 10 amd64 compatible
         shell: bash
