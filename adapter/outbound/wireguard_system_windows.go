@@ -27,8 +27,11 @@ import (
 )
 
 const (
-	windowsWireGuardInterfaceMetric = 9000
-	windowsWireGuardRouteMetric     = 0
+	// Keep the interface itself cheap for sockets pinned with IP_UNICAST_IF or
+	// IPV6_UNICAST_IF. Put the protection against accidental system-wide use on
+	// the route metric instead.
+	windowsWireGuardInterfaceMetric = 5
+	windowsWireGuardRouteMetric     = 9000
 	ipUnicastInterfaceOption        = 31
 	ipv6UnicastInterfaceOption      = 31
 )
@@ -61,6 +64,15 @@ type windowsWireGuardTunDevice struct {
 }
 
 var _ singWireGuard.Device = (*windowsWireGuardTunDevice)(nil)
+
+func wireGuardShouldDeferDeviceCreation() bool {
+	for _, argument := range os.Args[1:] {
+		if argument == "-t" {
+			return true
+		}
+	}
+	return false
+}
 
 func newWireGuardTunDevice(option WireGuardOption, localPrefixes []netip.Prefix, mtu uint32) (_ singWireGuard.Device, err error) {
 	if mtu == 0 {
@@ -297,6 +309,8 @@ func newWindowsWireGuardDialer(network string, localAddr netip.Addr, ifIndex int
 	// Bind IPv6 explicitly because a ULA /128 otherwise has unreliable source
 	// selection on Windows when several interfaces are active.
 	switch network {
+	case "udp4":
+		dialer.LocalAddr = &net.UDPAddr{IP: net.IP(localAddr.AsSlice())}
 	case "tcp6":
 		dialer.LocalAddr = &net.TCPAddr{IP: net.IP(localAddr.AsSlice())}
 	case "udp6":
@@ -380,7 +394,7 @@ func (d *windowsWireGuardTunDevice) ListenPacket(ctx context.Context, destinatio
 		if d.lc4 == nil || !d.v4.IsValid() {
 			return nil, fmt.Errorf("IPv4 is not configured on %q", d.name)
 		}
-		return d.lc4.ListenPacket(ctx, "udp4", "0.0.0.0:0")
+		return d.lc4.ListenPacket(ctx, "udp4", net.JoinHostPort(d.v4.String(), "0"))
 	}
 	if d.lc6 == nil || !d.v6.IsValid() {
 		return nil, fmt.Errorf("IPv6 is not configured on %q", d.name)

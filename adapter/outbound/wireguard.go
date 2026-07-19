@@ -265,11 +265,10 @@ func NewWireGuard(option WireGuardOption) (*WireGuard, error) {
 	if len(outbound.localPrefixes) == 0 {
 		return nil, E.New("missing local address")
 	}
-	// Defer Wintun/WireGuard device creation until the first real connection.
-	// Clash Verge validates profiles with `mihomo -t` in a normal user process.
-	// Creating a Wintun adapter while merely parsing the configuration makes
-	// validation fail with ERROR_ACCESS_DENIED. Lazy creation keeps `-t`
-	// side-effect free, while the elevated runtime/service creates the adapter.
+	// Keep `mihomo -t` side-effect free because Clash Verge performs config
+	// validation in a normal user process. The real runtime/service pre-creates
+	// the Windows device while loading the config so the first SOCKS connection
+	// does not pay the Wintun and WireGuard device creation cost.
 	outbound.mtu = uint32(mtu)
 
 	var has6 bool
@@ -292,6 +291,12 @@ func NewWireGuard(option WireGuardOption) (*WireGuard, error) {
 			Main: nss,
 			IPv6: has6,
 		})
+	}
+
+	if !wireGuardShouldDeferDeviceCreation() {
+		if err = outbound.ensureDevice(); err != nil {
+			return nil, err
+		}
 	}
 
 	return outbound, nil
