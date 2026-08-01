@@ -1,4 +1,4 @@
-# Kiểm tra sau build v3.2
+# Kiểm tra sau build v3.2.1
 
 1. Thay đúng hai file trong thư mục core Clash Verge:
 
@@ -8,7 +8,7 @@ wintun.dll
 ```
 
 2. Tắt hoàn toàn Clash Verge rồi mở lại.
-3. Kiểm tra version hoặc SHA-256 để chắc chắn đang chạy EXE v3.2.
+3. Kiểm tra version hoặc SHA-256 để chắc chắn đang chạy EXE v3.2.1.
 4. Dùng một SOCKS listener khóa trực tiếp vào một WireGuard.
 
 ## IPv4 mong đợi

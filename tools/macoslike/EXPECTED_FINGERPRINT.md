@@ -1,4 +1,4 @@
-# Dấu vết mong đợi của v3.2
+# Dấu vết mong đợi của v3.2.1
 
 ## IPv4 TCP SYN
 
@@ -62,4 +62,4 @@ QUIC transport fingerprint vẫn do ứng dụng/Chromium quyết định; patch
 - Firewall có thể MSS-clamp.
 - Router có thể xử lý ECN hoặc fragment/Packet Too Big.
 
-TCP Window, Window Scale, option order và Flow Label bình thường phải được giữ nguyên đầu-cuối; nếu Flow Label luôn `0` qua nhiều kết nối độc lập, v3.2 có thể chưa được áp hoặc một thiết bị trung gian đã ghi đè.
+TCP Window, Window Scale, option order và Flow Label bình thường phải được giữ nguyên đầu-cuối; nếu Flow Label luôn `0` qua nhiều kết nối độc lập, v3.2.1 có thể chưa được áp hoặc một thiết bị trung gian đã ghi đè.

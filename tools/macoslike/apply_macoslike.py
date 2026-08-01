@@ -470,7 +470,8 @@ def patch_gvisor_ipv6_flowlabel(root: pathlib.Path) -> None:
 // newIPv6FlowLabel provides an XNU-like random value masked to the 20-bit
 // IPv6 Flow Label field. A zero label is statistically possible and is kept.
 func (p *protocol) newIPv6FlowLabel() uint32 {
-\treturn p.stack.SecureRNG().Uint32() & 0x000fffff
+\trng := p.stack.SecureRNG()
+	return rng.Uint32() & 0x000fffff
 }
 """,
         "gVisor TCP random IPv6 Flow Label generator",
@@ -573,7 +574,8 @@ func (p *protocol) newIPv6FlowLabel() uint32 {
 }
 
 func (p *protocol) newIPv6FlowLabel() uint32 {
-\treturn p.stack.SecureRNG().Uint32() & 0x000fffff
+\trng := p.stack.SecureRNG()
+	return rng.Uint32() & 0x000fffff
 }
 """,
         "gVisor UDP profile and Flow Label generator",
@@ -757,6 +759,8 @@ def verify(root: pathlib.Path) -> None:
         "vendor/github.com/metacubex/gvisor/pkg/tcpip/transport/tcp/protocol.go": [
             "macOSLike bool",
             "func NewProtocolMacOSLike",
+            "rng := p.stack.SecureRNG()",
+            "return rng.Uint32() & 0x000fffff",
         ],
         "vendor/github.com/metacubex/gvisor/pkg/tcpip/transport/tcp/endpoint.go": [
             "return math.MaxUint16",
@@ -777,6 +781,8 @@ def verify(root: pathlib.Path) -> None:
         "vendor/github.com/metacubex/gvisor/pkg/tcpip/transport/udp/protocol.go": [
             "func NewProtocolMacOSLike",
             "func (p *protocol) newIPv6FlowLabel",
+            "rng := p.stack.SecureRNG()",
+            "return rng.Uint32() & 0x000fffff",
         ],
         "vendor/github.com/metacubex/gvisor/pkg/tcpip/transport/udp/endpoint.go": [
             'protocol    *protocol `state:"nosave"`',
@@ -803,6 +809,15 @@ def verify(root: pathlib.Path) -> None:
             selected.append(path.name)
     if selected != ["wireguard.go"]:
         raise RuntimeError(f"macOS-like constructor leaked outside WireGuard: {selected}")
+
+    for rel in (
+        "vendor/github.com/metacubex/gvisor/pkg/tcpip/transport/tcp/protocol.go",
+        "vendor/github.com/metacubex/gvisor/pkg/tcpip/transport/udp/protocol.go",
+    ):
+        if "SecureRNG().Uint32()" in read(root / rel):
+            raise RuntimeError(
+                f"non-addressable SecureRNG temporary detected in {rel}; Uint32 has a pointer receiver"
+            )
 
     udp_endpoint = read(root / "vendor/github.com/metacubex/gvisor/pkg/tcpip/transport/udp/endpoint.go")
     if "func newEndpoint(s *stack.Stack, netProto tcpip.NetworkProtocolNumber" not in udp_endpoint:
@@ -842,7 +857,7 @@ def main() -> int:
             patch_sing_ipv6_udp(root)
             patch_gvisor_ipv6_flowlabel(root)
         verify(root)
-        print("macOS-like WireGuard v3.2 patch verification: OK")
+        print("macOS-like WireGuard v3.2.1 patch verification: OK")
         return 0
     except Exception as exc:
         print(f"ERROR: {exc}", file=sys.stderr)

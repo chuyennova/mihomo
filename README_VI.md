@@ -1,4 +1,4 @@
-# Mihomo v1.19.29 — Windows macOS-like WireGuard v3.2 IPv6
+# Mihomo v1.19.29 — Windows macOS-like WireGuard v3.2.1 IPv6
 
 Bộ overlay này dùng cho nhánh `macoslike-v1.19.29` được tạo trực tiếp từ tag gốc `v1.19.29`. Nó giữ nguyên kiến trúc nhiều SOCKS → nhiều WireGuard của Mihomo và chỉ thay profile userspace network stack của WireGuard.
 
@@ -15,13 +15,13 @@ README_VI.md
 Commit vào nhánh `macoslike-v1.19.29`, rồi chạy workflow:
 
 ```text
-Build Windows macOS-like Mihomo v3.2 IPv6
+Build Windows macOS-like Mihomo v3.2.1 IPv6
 ```
 
 Artifact tạo ra:
 
 ```text
-verge-mihomo-windows-macoslike-v3.2-ipv6-amd64.zip
+verge-mihomo-windows-macoslike-v3.2.1-ipv6-amd64.zip
 ├── verge-mihomo.exe
 ├── wintun.dll
 ├── BUILD_INFO.txt
@@ -43,6 +43,17 @@ SOCKS 10883 → WG-03 → stack macOS-like 03
 ```
 
 Mỗi WireGuard vẫn có TCP, UDP, source-port allocator và trạng thái lỗi riêng.
+
+## Sửa lỗi build của v3.2
+
+Không dùng ZIP v3.2 cũ. `Stack.SecureRNG()` trả về `rand.RNG` theo giá trị, trong khi `RNG.Uint32()` là pointer receiver. Vì giá trị trả về trực tiếp không addressable, biểu thức `p.stack.SecureRNG().Uint32()` không biên dịch. V3.2.1 giữ RNG của từng stack nhưng đặt nó vào biến cục bộ trước khi gọi:
+
+```go
+rng := p.stack.SecureRNG()
+return rng.Uint32() & 0x000fffff
+```
+
+Workflow có kiểm tra cấm lại biểu thức lỗi cũ ở cả TCP và UDP.
 
 ## Khác biệt so với v2
 

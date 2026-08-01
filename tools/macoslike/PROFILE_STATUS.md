@@ -1,4 +1,4 @@
-# Trạng thái profile v3.2 IPv6
+# Trạng thái profile v3.2.1 IPv6
 
 ## Đã chỉnh và khóa theo từng WireGuard stack
 
@@ -33,8 +33,14 @@
 
 Bản này đảm bảo core phát đúng profile được định nghĩa ở trên. Nó không tuyên bố sao chép bit-for-bit mọi biến thể của mọi phiên bản macOS, vì XNU và cấu hình runtime có thể thay đổi theo phiên bản, ứng dụng, MTU, ECN và route. Các hành vi dài hạn như delayed ACK, recovery, RTO, ISN và toàn bộ ICMPv6/PMTUD vẫn cần PCAP ngoài Internet nếu muốn hiệu chỉnh sâu hơn.
 
-## Sửa lỗi tương thích gVisor UDP trong v3.2
+## Sửa lỗi tương thích gVisor UDP trong v3.2.1
 
 - Không thay chữ ký hàm nội bộ `udp.newEndpoint`, vì `udp/forwarder.go` cũng gọi hàm này.
 - Endpoint tạo qua protocol macOS-like được gắn profile sau khi constructor gốc hoàn tất.
 - Endpoint tạo bởi UDP forwarder vẫn dùng hành vi mặc định và không bị nil-pointer khi disconnect.
+
+## Sửa lỗi RNG trong v3.2.1
+
+- V3.2 gọi pointer method `Uint32()` trực tiếp trên giá trị tạm do `Stack.SecureRNG()` trả về, nên Go từ chối biên dịch.
+- V3.2.1 lấy RNG vào biến cục bộ rồi gọi `rng.Uint32()`. Nguồn ngẫu nhiên của chính stack vẫn được giữ nguyên.
+- Không thay đổi thuật toán, phạm vi WireGuard-only hay đường truyền Flow Label xuống IPv6 header.

@@ -30,7 +30,8 @@
 +// newIPv6FlowLabel provides an XNU-like random value masked to the 20-bit
 +// IPv6 Flow Label field. A zero label is statistically possible and is kept.
 +func (p *protocol) newIPv6FlowLabel() uint32 {
-+	return p.stack.SecureRNG().Uint32() & 0x000fffff
++	rng := p.stack.SecureRNG()
+	return rng.Uint32() & 0x000fffff
 +}
 +
  // NewProtocolProbe returns a TCP transport protocol with Reno congestion
@@ -126,7 +127,8 @@
 +}
 +
 +func (p *protocol) newIPv6FlowLabel() uint32 {
-+	return p.stack.SecureRNG().Uint32() & 0x000fffff
++	rng := p.stack.SecureRNG()
+	return rng.Uint32() & 0x000fffff
  }
  
  // Number returns the udp protocol number.

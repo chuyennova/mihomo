@@ -1,4 +1,4 @@
-# Phiên bản source đã khóa cho v3.2
+# Phiên bản source đã khóa cho v3.2.1
 
 ```text
 Mihomo: v1.19.29
