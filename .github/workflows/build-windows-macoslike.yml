@@ -1,4 +1,4 @@
-name: Build Windows macOS-like Mihomo v3.2 IPv6
+name: Build Windows macOS-like Mihomo v3.2.1 IPv6
 
 on:
   workflow_dispatch:
@@ -13,14 +13,14 @@ on:
       - ".github/workflows/build-windows-macoslike.yml"
 
 concurrency:
-  group: macoslike-v3-2-${{ github.workflow }}-${{ github.ref }}
+  group: macoslike-v3-2-1-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 permissions:
   contents: read
 
 jobs:
-  build-windows-amd64-v3-2:
+  build-windows-amd64-v3-2-1:
     runs-on: ubuntu-latest
     timeout-minutes: 60
 
@@ -84,7 +84,7 @@ jobs:
           test -f vendor/github.com/metacubex/gvisor/pkg/tcpip/transport/udp/forwarder.go
           test -f vendor/github.com/metacubex/gvisor/pkg/tcpip/transport/internal/network/endpoint.go
 
-      - name: Apply WireGuard-only macOS-like v3.2 profile
+      - name: Apply WireGuard-only macOS-like v3.2.1 profile
         shell: bash
         run: |
           set -euo pipefail
@@ -122,8 +122,13 @@ jobs:
           grep -n 'func newEndpoint(s \*stack.Stack' vendor/github.com/metacubex/gvisor/pkg/tcpip/transport/udp/endpoint.go
           grep -n 'newEndpoint(r.stack, r.pkt.NetworkProtocolNumber, queue)' vendor/github.com/metacubex/gvisor/pkg/tcpip/transport/udp/forwarder.go
           ! grep -q 'func newEndpoint(p \*protocol' vendor/github.com/metacubex/gvisor/pkg/tcpip/transport/udp/endpoint.go
-          grep -n 'return p.stack.SecureRNG().Uint32() & 0x000fffff' vendor/github.com/metacubex/gvisor/pkg/tcpip/transport/tcp/protocol.go
-          grep -n 'return p.stack.SecureRNG().Uint32() & 0x000fffff' vendor/github.com/metacubex/gvisor/pkg/tcpip/transport/udp/protocol.go
+          grep -n 'rng := p.stack.SecureRNG()' vendor/github.com/metacubex/gvisor/pkg/tcpip/transport/tcp/protocol.go
+          grep -n 'return rng.Uint32() & 0x000fffff' vendor/github.com/metacubex/gvisor/pkg/tcpip/transport/tcp/protocol.go
+          grep -n 'rng := p.stack.SecureRNG()' vendor/github.com/metacubex/gvisor/pkg/tcpip/transport/udp/protocol.go
+          grep -n 'return rng.Uint32() & 0x000fffff' vendor/github.com/metacubex/gvisor/pkg/tcpip/transport/udp/protocol.go
+          ! grep -R -q 'SecureRNG().Uint32()' \
+            vendor/github.com/metacubex/gvisor/pkg/tcpip/transport/tcp/protocol.go \
+            vendor/github.com/metacubex/gvisor/pkg/tcpip/transport/udp/protocol.go
           ! grep -q 'for label == 0' vendor/github.com/metacubex/gvisor/pkg/tcpip/transport/tcp/protocol.go
           ! grep -q 'for label == 0' vendor/github.com/metacubex/gvisor/pkg/tcpip/transport/udp/protocol.go
 
@@ -132,7 +137,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p dist
-          VERSION="macoslike-v3.2-v1.19.29-${GITHUB_SHA::7}"
+          VERSION="macoslike-v3.2.1-v1.19.29-${GITHUB_SHA::7}"
           BUILDTIME="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
           go build \
             -mod=vendor \
@@ -173,7 +178,7 @@ jobs:
           Base: Mihomo v1.19.29
           Target: Windows amd64 GOAMD64=v2
           Scope: WireGuard outbound only; one independent gVisor stack per outbound
-          TCP profile: macOS-like v3.2 active client profile
+          TCP profile: macOS-like v3.2.1 active client profile
           IPv4 expected: window=65535, ws=4, ttl=64, DF=1, atomic IPv4-ID=0
           TCP options: MSS,NOP,WS,NOP,NOP,TS,SACK,EOL+padding
           IPv6 expected: hop-limit=64, traffic-class inherited (normally 0), no ordinary extension header
@@ -184,7 +189,7 @@ jobs:
           (
             cd dist
             sha256sum verge-mihomo.exe wintun.dll > SHA256SUMS.txt
-            zip -9 -r ../verge-mihomo-windows-macoslike-v3.2-ipv6-amd64.zip \
+            zip -9 -r ../verge-mihomo-windows-macoslike-v3.2.1-ipv6-amd64.zip \
               verge-mihomo.exe \
               wintun.dll \
               LICENSE-mihomo.txt \
@@ -192,14 +197,14 @@ jobs:
               BUILD_INFO.txt \
               SHA256SUMS.txt
           )
-          unzip -l verge-mihomo-windows-macoslike-v3.2-ipv6-amd64.zip
+          unzip -l verge-mihomo-windows-macoslike-v3.2.1-ipv6-amd64.zip
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: verge-mihomo-windows-macoslike-v3.2-ipv6-amd64-${{ github.sha }}
+          name: verge-mihomo-windows-macoslike-v3.2.1-ipv6-amd64-${{ github.sha }}
           path: |
-            verge-mihomo-windows-macoslike-v3.2-ipv6-amd64.zip
+            verge-mihomo-windows-macoslike-v3.2.1-ipv6-amd64.zip
             dist/verge-mihomo.exe
             dist/wintun.dll
             dist/BUILD_INFO.txt
