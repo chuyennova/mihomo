@@ -1,61 +1,84 @@
---- a/vendor/github.com/metacubex/gvisor/pkg/tcpip/stack/stack.go
-+++ b/vendor/github.com/metacubex/gvisor/pkg/tcpip/stack/stack.go
-@@ -27,7 +27,6 @@
- 	"math/rand"
- 	"time"
+--- a/vendor/github.com/metacubex/gvisor/pkg/tcpip/transport/tcp/protocol.go
++++ b/vendor/github.com/metacubex/gvisor/pkg/tcpip/transport/tcp/protocol.go
+@@ -87,7 +87,8 @@
  
--	"golang.org/x/time/rate"
- 	"github.com/metacubex/gvisor/pkg/atomicbitops"
- 	"github.com/metacubex/gvisor/pkg/buffer"
- 	"github.com/metacubex/gvisor/pkg/log"
-@@ -36,6 +35,7 @@
- 	"github.com/metacubex/gvisor/pkg/tcpip/header"
- 	"github.com/metacubex/gvisor/pkg/tcpip/ports"
- 	"github.com/metacubex/gvisor/pkg/waiter"
-+	"golang.org/x/time/rate"
- )
+ // +stateify savable
+ type protocol struct {
+-	stack *stack.Stack
++	stack     *stack.Stack
++	macOSLike bool `state:"nosave"`
  
- const (
-@@ -116,6 +116,10 @@
- 	// handleLocal allows non-loopback interfaces to loop packets.
- 	handleLocal bool
+ 	mu                         protocolRWMutex `state:"nosave"`
+ 	sackEnabled                bool
+@@ -535,7 +536,13 @@
  
-+	// macOSLike enables narrowly scoped wire-format behavior used by the
-+	// Mihomo WireGuard macOS-like profile. It is per Stack, never global.
-+	macOSLike bool
-+
- 	// tables are the iptables packet filtering and manipulation rules.
- 	// TODO(gvisor.dev/issue/4595): S/R this field.
- 	tables *IPTables `state:"nosave"`
-@@ -216,6 +220,10 @@
- 	// stack (false).
- 	HandleLocal bool
- 
-+	// MacOSLike enables a per-stack Darwin/macOS-like wire profile. It is
-+	// intentionally disabled by default so other gVisor users are unchanged.
-+	MacOSLike bool
-+
- 	// NUDConfigs is the default NUD configurations used by interfaces.
- 	NUDConfigs NUDConfigurations
- 
-@@ -397,6 +405,7 @@
- 		clock:                        clock,
- 		stats:                        opts.Stats.FillIn(),
- 		handleLocal:                  opts.HandleLocal,
-+		macOSLike:                    opts.MacOSLike,
- 		tables:                       opts.IPTables,
- 		nftables:                     opts.NFTables,
- 		icmpRateLimiter:              NewICMPRateLimiter(clock),
-@@ -536,6 +545,12 @@
- 	return s.clock
- }
- 
-+// MacOSLike reports whether this independent stack uses the scoped
-+// Darwin/macOS-like wire profile.
-+func (s *Stack) MacOSLike() bool {
-+	return s.macOSLike
+ // NewProtocol returns a TCP transport protocol with Reno congestion control.
+ func NewProtocol(s *stack.Stack) stack.TransportProtocol {
+-	return newProtocol(s, ccReno, nil)
++	return newProtocol(s, ccReno, nil, false)
 +}
 +
- // Stats returns a mutable copy of the current stats.
++// NewProtocolMacOSLike creates a per-stack Darwin/macOS-like TCP profile.
++// It is selected only by the Mihomo WireGuard constructor added by this patch.
++func NewProtocolMacOSLike(s *stack.Stack) stack.TransportProtocol {
++	return newProtocol(s, ccCubic, nil, true)
+ }
+ 
+ // NewProtocolProbe returns a TCP transport protocol with Reno congestion
+@@ -546,7 +553,7 @@
+ // processing of the segment.
+ func NewProtocolProbe(probe TCPProbeFunc) func(*stack.Stack) stack.TransportProtocol {
+ 	return func(s *stack.Stack) stack.TransportProtocol {
+-		return newProtocol(s, ccReno, probe)
++		return newProtocol(s, ccReno, probe, false)
+ 	}
+ }
+ 
+@@ -555,10 +562,10 @@
  //
- // This is not generally exported via the public interface, but is available
+ // TODO(b/345835636): Remove this and make CUBIC the default across the board.
+ func NewProtocolCUBIC(s *stack.Stack) stack.TransportProtocol {
+-	return newProtocol(s, ccCubic, nil)
++	return newProtocol(s, ccCubic, nil, false)
+ }
+ 
+-func newProtocol(s *stack.Stack, cc string, probe TCPProbeFunc) stack.TransportProtocol {
++func newProtocol(s *stack.Stack, cc string, probe TCPProbeFunc, macOSLike bool) stack.TransportProtocol {
+ 	rng := s.SecureRNG()
+ 	var seqnumSecret [16]byte
+ 	var tsOffsetSecret [16]byte
+@@ -569,7 +576,8 @@
+ 		panic(fmt.Sprintf("Read() failed: %v", err))
+ 	}
+ 	p := protocol{
+-		stack: s,
++		stack:     s,
++		macOSLike: macOSLike,
+ 		sendBufferSize: tcpip.TCPSendBufferSizeRangeOption{
+ 			Min:     MinBufferSize,
+ 			Default: DefaultSendBufferSize,
+--- a/vendor/github.com/metacubex/gvisor/pkg/tcpip/transport/tcp/endpoint.go
++++ b/vendor/github.com/metacubex/gvisor/pkg/tcpip/transport/tcp/endpoint.go
+@@ -1257,6 +1257,11 @@
+ // initialReceiveWindow returns the initial receive window to advertise in the
+ // SYN/SYN-ACK.
+ func (e *Endpoint) initialReceiveWindow() int {
++	if e.protocol.macOSLike {
++		// Common active-open XNU/macOS SYN profile. The negotiated scale is
++		// applied only after the handshake; the SYN field itself is 65535.
++		return math.MaxUint16
++	}
+ 	rcvWnd := wndFromSpace(e.receiveBufferAvailable())
+ 	if rcvWnd > math.MaxUint16 {
+ 		rcvWnd = math.MaxUint16
+@@ -3099,6 +3104,10 @@
+ // receiveBuffer otherwise we use the max permissible receive buffer size to
+ // compute the scale.
+ func (e *Endpoint) rcvWndScaleForHandshake() int {
++	if e.protocol.macOSLike {
++		// Common desktop macOS/XNU client signature.
++		return 4
++	}
+ 	bufSizeForScale := e.ops.GetReceiveBufferSize()
+ 
+ 	e.rcvQueueMu.Lock()

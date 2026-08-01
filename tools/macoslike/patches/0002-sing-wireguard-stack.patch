@@ -1,30 +1,37 @@
 --- a/vendor/github.com/metacubex/sing-wireguard/device_stack.go
 +++ b/vendor/github.com/metacubex/sing-wireguard/device_stack.go
-@@ -45,11 +45,31 @@
+@@ -42,14 +42,37 @@
+ 	dispatcher stack.NetworkDispatcher
+ 	addr4      tcpip.Address
+ 	addr6      tcpip.Address
++	macOSLike  bool
  }
  
  func NewStackDevice(localAddresses []netip.Prefix, mtu uint32) (*StackDevice, error) {
 +	return newStackDevice(localAddresses, mtu, false)
 +}
 +
-+// NewStackDeviceMacOSLike creates an independent userspace network stack for a
-+// WireGuard outbound and enables the scoped Darwin/macOS-like wire profile.
-+// It does not use the Windows kernel TCP stack.
++// NewStackDeviceMacOSLike creates an independent gVisor stack for one
++// WireGuard outbound. It runs on Windows but selects a Darwin/macOS-like TCP
++// wire profile instead of gVisor's default Linux-oriented profile.
 +func NewStackDeviceMacOSLike(localAddresses []netip.Prefix, mtu uint32) (*StackDevice, error) {
 +	return newStackDevice(localAddresses, mtu, true)
 +}
 +
 +func newStackDevice(localAddresses []netip.Prefix, mtu uint32, macOSLike bool) (*StackDevice, error) {
++	var tcpProtocol stack.TransportProtocolFactory = tcp.NewProtocol
++	if macOSLike {
++		tcpProtocol = tcp.NewProtocolMacOSLike
++	}
  	ipStack := stack.New(stack.Options{
  		NetworkProtocols:   []stack.NetworkProtocolFactory{ipv4.NewProtocol, ipv6.NewProtocol},
- 		TransportProtocols: []stack.TransportProtocolFactory{tcp.NewProtocol, udp.NewProtocol, icmp.NewProtocol4, icmp.NewProtocol6},
+-		TransportProtocols: []stack.TransportProtocolFactory{tcp.NewProtocol, udp.NewProtocol, icmp.NewProtocol4, icmp.NewProtocol6},
++		TransportProtocols: []stack.TransportProtocolFactory{tcpProtocol, udp.NewProtocol, icmp.NewProtocol4, icmp.NewProtocol6},
  		HandleLocal:        true,
-+		MacOSLike:          macOSLike,
  	})
 +	if macOSLike {
-+		// XNU's normal automatic client-port range is 49152-65535.
-+		// PortManager randomizes the starting offset per stack, while each
-+		// WireGuard outbound retains a separate PortManager and TCP state.
++		// Normal XNU automatic client-port range. PortManager is per stack,
++		// so WireGuard outbounds remain fully isolated.
 +		if err := ipStack.SetPortRange(49152, 65535); err != nil {
 +			return nil, E.New("set macOS-like ephemeral port range: ", err.String())
 +		}
@@ -32,3 +39,24 @@
  	ctx, cancel := context.WithCancel(context.Background())
  	tunDevice := &StackDevice{
  		stack:     ipStack,
+@@ -58,6 +81,7 @@
+ 		outbound:  make(chan *stack.PacketBuffer, 256),
+ 		ctx:       ctx,
+ 		ctxCancel: cancel,
++		macOSLike: macOSLike,
+ 	}
+ 	err := ipStack.CreateNIC(defaultNIC, (*wireEndpoint)(tunDevice))
+ 	if err != nil {
+@@ -115,7 +139,11 @@
+ 	}
+ 	switch N.NetworkName(network) {
+ 	case N.NetworkTCP:
+-		conn, err = DialTCPWithBind(ctx, w.stack, bind, addr, networkProtocol)
++		if w.macOSLike {
++			conn, err = DialTCPWithBindMacOSLike(ctx, w.stack, bind, addr, networkProtocol)
++		} else {
++			conn, err = DialTCPWithBind(ctx, w.stack, bind, addr, networkProtocol)
++		}
+ 	case N.NetworkUDP:
+ 		conn, err = gonet.DialUDP(w.stack, &bind, &addr, networkProtocol)
+ 	default:

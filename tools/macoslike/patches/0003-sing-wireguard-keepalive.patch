@@ -1,6 +1,23 @@
 --- a/vendor/github.com/metacubex/sing-wireguard/gonet.go
 +++ b/vendor/github.com/metacubex/sing-wireguard/gonet.go
-@@ -68,12 +68,17 @@
+@@ -20,6 +20,16 @@
+ )
+ 
+ func DialTCPWithBind(ctx context.Context, s *stack.Stack, localAddr, remoteAddr tcpip.FullAddress, network tcpip.NetworkProtocolNumber) (*gonet.TCPConn, error) {
++	return dialTCPWithBind(ctx, s, localAddr, remoteAddr, network, true)
++}
++
++// DialTCPWithBindMacOSLike leaves SO_KEEPALIVE disabled, as on a normal
++// outbound socket unless the application explicitly enables it.
++func DialTCPWithBindMacOSLike(ctx context.Context, s *stack.Stack, localAddr, remoteAddr tcpip.FullAddress, network tcpip.NetworkProtocolNumber) (*gonet.TCPConn, error) {
++	return dialTCPWithBind(ctx, s, localAddr, remoteAddr, network, false)
++}
++
++func dialTCPWithBind(ctx context.Context, s *stack.Stack, localAddr, remoteAddr tcpip.FullAddress, network tcpip.NetworkProtocolNumber, forceKeepalive bool) (*gonet.TCPConn, error) {
+ 	// Create TCP endpoint, then connect.
+ 	var wq waiter.Queue
+ 	ep, err := s.NewEndpoint(tcp.ProtocolNumber, network, &wq)
+@@ -68,12 +78,14 @@
  		}
  	}
  
@@ -10,11 +27,8 @@
 -	ep.SetSockOpt(&keepAliveIdle)
 -	keepAliveInterval := tcpip.KeepaliveIntervalOption(15 * time.Second)
 -	ep.SetSockOpt(&keepAliveInterval)
-+	// Preserve the historical sing-wireguard 15-second keepalive only for
-+	// ordinary stacks. A normal macOS socket does not have SO_KEEPALIVE forced
-+	// on for every outbound connection, so the macOS-like profile leaves it off
-+	// unless the application explicitly requests it.
-+	if !s.MacOSLike() {
++	if forceKeepalive {
++		// Preserve original sing-wireguard behavior for ordinary stacks.
 +		ep.SocketOptions().SetKeepAlive(true)
 +		keepAliveIdle := tcpip.KeepaliveIdleOption(15 * time.Second)
 +		ep.SetSockOpt(&keepAliveIdle)

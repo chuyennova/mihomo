@@ -9,13 +9,13 @@
  	// Emulate linux option order. This is as follows:
  	//
  	// if md5: NOP NOP MD5SIG 18 md5sig(16)
-@@ -802,6 +802,47 @@
+@@ -802,6 +802,44 @@
  	return options[:offset]
  }
  
-+// makeDarwinSynOptions follows XNU's documented SYN option packing order:
-+// MSS, NOP, Window Scale, SACK Permitted, Timestamp. XNU terminates and pads
-+// an unaligned option list with EOL/zero bytes rather than Linux-style NOPs.
++// makeDarwinSynOptions follows XNU's active-open layout:
++// MSS, NOP+WindowScale, NOP+NOP+Timestamp, SACK-Permitted last, followed by
++// EOL and zero padding to a four-byte boundary.
 +func makeDarwinSynOptions(opts header.TCPSynOptions) []byte {
 +	options := getOptions()
 +	offset := header.EncodeMSSOption(uint32(opts.MSS), options)
@@ -24,20 +24,17 @@
 +		offset += header.EncodeNOP(options[offset:])
 +		offset += header.EncodeWSOption(opts.WS, options[offset:])
 +	}
++	if opts.TS {
++		offset += header.EncodeNOP(options[offset:])
++		offset += header.EncodeNOP(options[offset:])
++		offset += header.EncodeTSOption(opts.TSVal, opts.TSEcr, options[offset:])
++	}
 +	if opts.SACKPermitted {
 +		offset += header.EncodeSACKPermittedOption(options[offset:])
 +	}
-+	if opts.TS {
-+		// XNU aligns Timestamp so the option kind begins at offset 2 mod 4.
-+		for offset == 0 || offset%4 != 2 {
-+			offset += header.EncodeNOP(options[offset:])
-+		}
-+		offset += header.EncodeTSOption(opts.TSVal, opts.TSEcr, options[offset:])
-+	}
 +
 +	if offset%4 != 0 {
-+		// TCP End of Option List is zero; the remaining bytes are zero padding.
-+		options[offset] = 0
++		options[offset] = header.TCPOptionEOL
 +		offset++
 +		for offset%4 != 0 {
 +			options[offset] = 0
@@ -57,12 +54,17 @@
  // tcpFields is a struct to carry different parameters required by the
  // send*TCP variant functions below.
  type tcpFields struct {
-@@ -819,7 +860,7 @@
+@@ -819,7 +857,12 @@
  }
  
  func (e *Endpoint) sendSynTCP(r *stack.Route, tf tcpFields, opts header.TCPSynOptions) tcpip.Error {
 -	tf.opts = makeSynOptions(opts)
-+	tf.opts = makeSynOptions(opts, e.stack.MacOSLike())
++	tf.opts = makeSynOptions(opts, e.protocol.macOSLike)
++	if e.protocol.macOSLike {
++		// XNU enables Path MTU Discovery for normal TCP. gVisor's IPv4
++		// writer then emits DF=1 and leaves the atomic datagram IP ID at 0.
++		tf.df = true
++	}
  	// We ignore SYN send errors and let the callers re-attempt send.
  	hdrSize := header.TCPMinimumSize + int(r.MaxHeaderLength()) + len(tf.opts)
  	if r.NetProto() == header.IPv6ProtocolNumber && tf.expOptVal != 0 {

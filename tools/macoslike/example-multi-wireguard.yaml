@@ -1,24 +1,23 @@
-# Chỉ minh họa listeners → WireGuard; thay khóa và endpoint thật.
 proxies:
-  - name: WG-01
+  - name: WG-S9-01
     type: wireguard
     server: 192.168.8.50
     port: 51820
-    ip: 10.10.1.2/32
-    private-key: "REPLACE_PRIVATE_KEY_01"
-    public-key: "REPLACE_PUBLIC_KEY_01"
+    ip: 10.10.1.2
+    private-key: REPLACE_PRIVATE_KEY_01
+    public-key: REPLACE_PUBLIC_KEY_01
     udp: true
-    mtu: 1408
+    mtu: 1360
 
-  - name: WG-02
+  - name: WG-S9-02
     type: wireguard
     server: 192.168.8.51
     port: 51820
-    ip: 10.10.2.2/32
-    private-key: "REPLACE_PRIVATE_KEY_02"
-    public-key: "REPLACE_PUBLIC_KEY_02"
+    ip: 10.10.2.2
+    private-key: REPLACE_PRIVATE_KEY_02
+    public-key: REPLACE_PUBLIC_KEY_02
     udp: true
-    mtu: 1408
+    mtu: 1360
 
 listeners:
   - name: SOCKS-WG-01
@@ -26,11 +25,11 @@ listeners:
     listen: 127.0.0.1
     port: 10881
     udp: true
-    proxy: WG-01
+    proxy: WG-S9-01
 
   - name: SOCKS-WG-02
     type: socks
     listen: 127.0.0.1
     port: 10882
     udp: true
-    proxy: WG-02
+    proxy: WG-S9-02
