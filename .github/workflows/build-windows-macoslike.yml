@@ -1,4 +1,4 @@
-name: Build Windows macOS-like Mihomo v2
+name: Build Windows macOS-like Mihomo v3.2 IPv6
 
 on:
   workflow_dispatch:
@@ -13,14 +13,14 @@ on:
       - ".github/workflows/build-windows-macoslike.yml"
 
 concurrency:
-  group: macoslike-v2-${{ github.workflow }}-${{ github.ref }}
+  group: macoslike-v3-2-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 permissions:
   contents: read
 
 jobs:
-  build-windows-amd64-v2:
+  build-windows-amd64-v3-2:
     runs-on: ubuntu-latest
     timeout-minutes: 60
 
@@ -74,11 +74,17 @@ jobs:
           go mod vendor
           test -f vendor/github.com/metacubex/sing-wireguard/device_stack.go
           test -f vendor/github.com/metacubex/sing-wireguard/gonet.go
+          test -f vendor/github.com/metacubex/gvisor/pkg/tcpip/stack/registration.go
+          test -f vendor/github.com/metacubex/gvisor/pkg/tcpip/network/ipv6/ipv6.go
           test -f vendor/github.com/metacubex/gvisor/pkg/tcpip/transport/tcp/protocol.go
           test -f vendor/github.com/metacubex/gvisor/pkg/tcpip/transport/tcp/endpoint.go
           test -f vendor/github.com/metacubex/gvisor/pkg/tcpip/transport/tcp/connect.go
+          test -f vendor/github.com/metacubex/gvisor/pkg/tcpip/transport/udp/protocol.go
+          test -f vendor/github.com/metacubex/gvisor/pkg/tcpip/transport/udp/endpoint.go
+          test -f vendor/github.com/metacubex/gvisor/pkg/tcpip/transport/udp/forwarder.go
+          test -f vendor/github.com/metacubex/gvisor/pkg/tcpip/transport/internal/network/endpoint.go
 
-      - name: Apply WireGuard-only macOS-like v2 profile
+      - name: Apply WireGuard-only macOS-like v3.2 profile
         shell: bash
         run: |
           set -euo pipefail
@@ -87,12 +93,17 @@ jobs:
             adapter/outbound/wireguard.go \
             vendor/github.com/metacubex/sing-wireguard/device_stack.go \
             vendor/github.com/metacubex/sing-wireguard/gonet.go \
+            vendor/github.com/metacubex/gvisor/pkg/tcpip/stack/registration.go \
+            vendor/github.com/metacubex/gvisor/pkg/tcpip/network/ipv6/ipv6.go \
             vendor/github.com/metacubex/gvisor/pkg/tcpip/transport/tcp/protocol.go \
             vendor/github.com/metacubex/gvisor/pkg/tcpip/transport/tcp/endpoint.go \
-            vendor/github.com/metacubex/gvisor/pkg/tcpip/transport/tcp/connect.go
+            vendor/github.com/metacubex/gvisor/pkg/tcpip/transport/tcp/connect.go \
+            vendor/github.com/metacubex/gvisor/pkg/tcpip/transport/udp/protocol.go \
+            vendor/github.com/metacubex/gvisor/pkg/tcpip/transport/udp/endpoint.go \
+            vendor/github.com/metacubex/gvisor/pkg/tcpip/transport/internal/network/endpoint.go
           python3 tools/macoslike/apply_macoslike.py --root . --verify-only
 
-      - name: Verify expected SYN profile in source
+      - name: Verify expected IPv4 and IPv6 profile in source
         shell: bash
         run: |
           set -euo pipefail
@@ -103,13 +114,25 @@ jobs:
           grep -n 'return 4' vendor/github.com/metacubex/gvisor/pkg/tcpip/transport/tcp/endpoint.go
           grep -n 'tf.df = true' vendor/github.com/metacubex/gvisor/pkg/tcpip/transport/tcp/connect.go
           grep -n 'SetPortRange(49152, 65535)' vendor/github.com/metacubex/sing-wireguard/device_stack.go
+          grep -n 'udp.NewProtocolMacOSLike' vendor/github.com/metacubex/sing-wireguard/device_stack.go
+          grep -n 'IPv6FlowLabel uint32' vendor/github.com/metacubex/gvisor/pkg/tcpip/stack/registration.go
+          grep -n 'FlowLabel:.*params.IPv6FlowLabel' vendor/github.com/metacubex/gvisor/pkg/tcpip/network/ipv6/ipv6.go
+          grep -n 'func NewProtocolMacOSLike' vendor/github.com/metacubex/gvisor/pkg/tcpip/transport/udp/protocol.go
+          grep -n 'SetIPv6FlowLabel' vendor/github.com/metacubex/gvisor/pkg/tcpip/transport/udp/endpoint.go
+          grep -n 'func newEndpoint(s \*stack.Stack' vendor/github.com/metacubex/gvisor/pkg/tcpip/transport/udp/endpoint.go
+          grep -n 'newEndpoint(r.stack, r.pkt.NetworkProtocolNumber, queue)' vendor/github.com/metacubex/gvisor/pkg/tcpip/transport/udp/forwarder.go
+          ! grep -q 'func newEndpoint(p \*protocol' vendor/github.com/metacubex/gvisor/pkg/tcpip/transport/udp/endpoint.go
+          grep -n 'return p.stack.SecureRNG().Uint32() & 0x000fffff' vendor/github.com/metacubex/gvisor/pkg/tcpip/transport/tcp/protocol.go
+          grep -n 'return p.stack.SecureRNG().Uint32() & 0x000fffff' vendor/github.com/metacubex/gvisor/pkg/tcpip/transport/udp/protocol.go
+          ! grep -q 'for label == 0' vendor/github.com/metacubex/gvisor/pkg/tcpip/transport/tcp/protocol.go
+          ! grep -q 'for label == 0' vendor/github.com/metacubex/gvisor/pkg/tcpip/transport/udp/protocol.go
 
       - name: Build verge-mihomo.exe
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p dist
-          VERSION="macoslike-v2-v1.19.29-${GITHUB_SHA::7}"
+          VERSION="macoslike-v3.2-v1.19.29-${GITHUB_SHA::7}"
           BUILDTIME="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
           go build \
             -mod=vendor \
@@ -149,17 +172,19 @@ jobs:
           Core: verge-mihomo.exe
           Base: Mihomo v1.19.29
           Target: Windows amd64 GOAMD64=v2
-          WireGuard: independent gVisor stack per outbound
-          TCP/IP profile: macOS-like v2 active client profile
-          Expected SYN: window=65535, ws=4, ttl=64, DF=1, IPv4-ID=0
-          Expected options: MSS,NOP,WS,NOP,NOP,TS,SACK,EOL+padding
-          MSS: derived from actual WireGuard path MTU
+          Scope: WireGuard outbound only; one independent gVisor stack per outbound
+          TCP profile: macOS-like v3.2 active client profile
+          IPv4 expected: window=65535, ws=4, ttl=64, DF=1, atomic IPv4-ID=0
+          TCP options: MSS,NOP,WS,NOP,NOP,TS,SACK,EOL+padding
+          IPv6 expected: hop-limit=64, traffic-class inherited (normally 0), no ordinary extension header
+          IPv6 Flow Label: XNU-style random 20-bit value (zero statistically possible), stable for one TCP flow or UDP socket
+          MSS: derived from actual WireGuard MTU; MTU 1360 => IPv4 MSS 1320, IPv6 MSS 1300
           Git commit: ${GITHUB_SHA}
           EOF
           (
             cd dist
             sha256sum verge-mihomo.exe wintun.dll > SHA256SUMS.txt
-            zip -9 -r ../verge-mihomo-windows-macoslike-v2-amd64.zip \
+            zip -9 -r ../verge-mihomo-windows-macoslike-v3.2-ipv6-amd64.zip \
               verge-mihomo.exe \
               wintun.dll \
               LICENSE-mihomo.txt \
@@ -167,14 +192,14 @@ jobs:
               BUILD_INFO.txt \
               SHA256SUMS.txt
           )
-          unzip -l verge-mihomo-windows-macoslike-v2-amd64.zip
+          unzip -l verge-mihomo-windows-macoslike-v3.2-ipv6-amd64.zip
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: verge-mihomo-windows-macoslike-v2-amd64-${{ github.sha }}
+          name: verge-mihomo-windows-macoslike-v3.2-ipv6-amd64-${{ github.sha }}
           path: |
-            verge-mihomo-windows-macoslike-v2-amd64.zip
+            verge-mihomo-windows-macoslike-v3.2-ipv6-amd64.zip
             dist/verge-mihomo.exe
             dist/wintun.dll
             dist/BUILD_INFO.txt
