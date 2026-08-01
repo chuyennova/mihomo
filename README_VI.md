@@ -1,69 +1,57 @@
-# Mihomo 1.19.29 — Windows macOS-like WireGuard build overlay
+# Mihomo v1.19.29 — Windows macOS-like WireGuard v2
 
-Gói này được giải nén **đè vào thư mục gốc của nhánh Mihomo 1.19.29** rồi push lên GitHub. Workflow sẽ tự:
+Bộ overlay này dùng cho nhánh `macoslike-v1.19.29` tạo từ tag gốc `v1.19.29`.
+Nó không dùng nhánh Windows Winsock cũ.
 
-1. tải đúng dependency từ `go.mod`;
-2. tạo thư mục `vendor`;
-3. chỉ chuyển `adapter/outbound/wireguard.go` sang stack macOS-like;
-4. giữ OpenVPN và MASQUE dùng `NewStackDevice()` gốc;
-5. build Windows amd64 v2 thành đúng `verge-mihomo.exe`;
-6. tải `wintun.dll` chính thức, kiểm tra SHA-256 và đóng gói artifact.
+## Cách đưa lên GitHub
 
-## Cách dùng
+Chép đè toàn bộ nội dung overlay vào thư mục gốc repository. Các file cũ trong:
 
-Sao chép hai thư mục sau vào root repository:
+- `.github/workflows/build-windows-macoslike.yml`
+- `tools/macoslike/`
 
-```text
-.github/workflows/build-windows-macoslike.yml
-tools/macoslike/
-```
+phải được thay bằng bản v2 này. Sau đó commit trực tiếp vào nhánh `macoslike-v1.19.29` và chạy workflow **Build Windows macOS-like Mihomo v2**.
 
-Sau đó commit và push. Vào **Actions → Build Windows macOS-like Mihomo → Run workflow**. Kết quả tải ở mục Artifacts:
+## Artifact
+
+Workflow tạo:
 
 ```text
-verge-mihomo-windows-macoslike-amd64-v2.zip
+verge-mihomo-windows-macoslike-v2-amd64.zip
 ├── verge-mihomo.exe
 ├── wintun.dll
-├── LICENSE-mihomo.txt
-├── LICENSE-wintun.txt
 ├── BUILD_INFO.txt
-└── SHA256SUMS.txt
+├── SHA256SUMS.txt
+├── LICENSE-mihomo.txt
+└── LICENSE-wintun.txt
 ```
 
-Không đổi tên `verge-mihomo.exe` hoặc `wintun.dll` khi chép vào Clash Verge.
+Tên `verge-mihomo.exe` và `wintun.dll` giữ đúng để Clash Verge sử dụng.
 
-## Những thay đổi đã được khóa phạm vi
+## Phạm vi patch
 
-- `adapter/outbound/wireguard.go`: chỉ WireGuard gọi `NewStackDeviceMacOSLike()`.
-- `sing-wireguard/device_stack.go`: mỗi WireGuard vẫn có `stack.Stack`, PortManager, TCP/UDP state và địa chỉ riêng.
-- `gVisor stack.go`: thêm cờ profile **per-stack**, không dùng biến global.
-- `gVisor connect.go`: SYN của profile mới theo thứ tự XNU:
+Chỉ WireGuard outbound dùng profile mới. OpenVPN, MASQUE, listener, tunnel, rule và cơ chế nhiều cổng SOCKS giữ nguyên.
+
+Mỗi WireGuard vẫn tạo một gVisor stack riêng:
 
 ```text
-MSS → NOP → Window Scale → SACK Permitted → Timestamp
+SOCKS 10881 -> WG-01 -> stack 01
+SOCKS 10882 -> WG-02 -> stack 02
+SOCKS 10883 -> WG-03 -> stack 03
 ```
 
-- Padding cuối TCP options dùng EOL/zero theo XNU.
-- Dải ephemeral port đổi từ gVisor `16000+` sang XNU `49152–65535`.
-- Không ép keepalive 15 giây cho mọi TCP connection của profile macOS-like.
-- TTL/Hop Limit 64, SACK và CUBIC vốn đã gần giá trị Unix/macOS nên không sửa mù.
+## Sửa lỗi của v1
 
-## Nhiều SOCKS và nhiều WireGuard
+Bản v1 cho ra `window=26368`, `WS=7`, DF tắt và option order chưa đúng. Bản v2 sửa chính xác đường tạo active SYN:
 
-Logic gốc vẫn giữ nguyên:
+- Window: `65535`
+- Window Scale: `4`
+- TTL/Hop Limit mặc định: `64`
+- IPv4 DF: bật trên SYN
+- IPv4 ID: `0` cho atomic datagram
+- TCP options: `MSS,NOP,WS,NOP,NOP,TS,SACK,EOL+padding`
+- Ephemeral port nội bộ: `49152-65535`
+- Không cưỡng chế keepalive 15 giây cho profile này
+- MSS vẫn tính từ MTU thực tế, không ép sai thành 1460
 
-```text
-SOCKS 10881 → WG-01 → stack macOS-like 01
-SOCKS 10882 → WG-02 → stack macOS-like 02
-SOCKS 10883 → WG-03 → stack macOS-like 03
-```
-
-Một stack lỗi không dùng chung PortManager/TCP state với stack khác.
-
-## Mức độ chính xác
-
-Đây là **baseline có căn cứ từ mã XNU**, không phải tuyên bố “Mac thật 100%”. Các giá trị phụ thuộc phiên bản macOS, MTU và đường truyền như advertised window, Window Scale thực tế, ECN, ACK delay, recovery và IPv6 flow label phải được hiệu chỉnh bằng PCAP thu từ máy Mac mục tiêu và PCAP ở máy chủ ngoài sau S9/NAT.
-
-Không nên khóa MSS thành 1460: Mihomo WireGuard mặc định MTU 1408 nên MSS phải theo Path MTU; ép sai sẽ tạo fingerprint bất thường hoặc phân mảnh.
-
-Xem thêm `tools/macoslike/PROFILE_STATUS.md` và `tools/macoslike/TEST_AFTER_BUILD.md`.
+Xem `tools/macoslike/EXPECTED_FINGERPRINT.md` trước khi kiểm thử.
