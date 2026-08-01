@@ -1,0 +1,61 @@
+--- a/vendor/github.com/metacubex/gvisor/pkg/tcpip/stack/stack.go
++++ b/vendor/github.com/metacubex/gvisor/pkg/tcpip/stack/stack.go
+@@ -27,7 +27,6 @@
+ 	"math/rand"
+ 	"time"
+ 
+-	"golang.org/x/time/rate"
+ 	"github.com/metacubex/gvisor/pkg/atomicbitops"
+ 	"github.com/metacubex/gvisor/pkg/buffer"
+ 	"github.com/metacubex/gvisor/pkg/log"
+@@ -36,6 +35,7 @@
+ 	"github.com/metacubex/gvisor/pkg/tcpip/header"
+ 	"github.com/metacubex/gvisor/pkg/tcpip/ports"
+ 	"github.com/metacubex/gvisor/pkg/waiter"
++	"golang.org/x/time/rate"
+ )
+ 
+ const (
+@@ -116,6 +116,10 @@
+ 	// handleLocal allows non-loopback interfaces to loop packets.
+ 	handleLocal bool
+ 
++	// macOSLike enables narrowly scoped wire-format behavior used by the
++	// Mihomo WireGuard macOS-like profile. It is per Stack, never global.
++	macOSLike bool
++
+ 	// tables are the iptables packet filtering and manipulation rules.
+ 	// TODO(gvisor.dev/issue/4595): S/R this field.
+ 	tables *IPTables `state:"nosave"`
+@@ -216,6 +220,10 @@
+ 	// stack (false).
+ 	HandleLocal bool
+ 
++	// MacOSLike enables a per-stack Darwin/macOS-like wire profile. It is
++	// intentionally disabled by default so other gVisor users are unchanged.
++	MacOSLike bool
++
+ 	// NUDConfigs is the default NUD configurations used by interfaces.
+ 	NUDConfigs NUDConfigurations
+ 
+@@ -397,6 +405,7 @@
+ 		clock:                        clock,
+ 		stats:                        opts.Stats.FillIn(),
+ 		handleLocal:                  opts.HandleLocal,
++		macOSLike:                    opts.MacOSLike,
+ 		tables:                       opts.IPTables,
+ 		nftables:                     opts.NFTables,
+ 		icmpRateLimiter:              NewICMPRateLimiter(clock),
+@@ -536,6 +545,12 @@
+ 	return s.clock
+ }
+ 
++// MacOSLike reports whether this independent stack uses the scoped
++// Darwin/macOS-like wire profile.
++func (s *Stack) MacOSLike() bool {
++	return s.macOSLike
++}
++
+ // Stats returns a mutable copy of the current stats.
+ //
+ // This is not generally exported via the public interface, but is available

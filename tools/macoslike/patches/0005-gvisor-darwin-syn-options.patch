@@ -1,0 +1,68 @@
+--- a/vendor/github.com/metacubex/gvisor/pkg/tcpip/transport/tcp/connect.go
++++ b/vendor/github.com/metacubex/gvisor/pkg/tcpip/transport/tcp/connect.go
+@@ -749,7 +749,7 @@
+ 	optionPool.Put(optionsToArray(options))
+ }
+ 
+-func makeSynOptions(opts header.TCPSynOptions) []byte {
++func makeDefaultSynOptions(opts header.TCPSynOptions) []byte {
+ 	// Emulate linux option order. This is as follows:
+ 	//
+ 	// if md5: NOP NOP MD5SIG 18 md5sig(16)
+@@ -802,6 +802,47 @@
+ 	return options[:offset]
+ }
+ 
++// makeDarwinSynOptions follows XNU's documented SYN option packing order:
++// MSS, NOP, Window Scale, SACK Permitted, Timestamp. XNU terminates and pads
++// an unaligned option list with EOL/zero bytes rather than Linux-style NOPs.
++func makeDarwinSynOptions(opts header.TCPSynOptions) []byte {
++	options := getOptions()
++	offset := header.EncodeMSSOption(uint32(opts.MSS), options)
++
++	if opts.WS >= 0 {
++		offset += header.EncodeNOP(options[offset:])
++		offset += header.EncodeWSOption(opts.WS, options[offset:])
++	}
++	if opts.SACKPermitted {
++		offset += header.EncodeSACKPermittedOption(options[offset:])
++	}
++	if opts.TS {
++		// XNU aligns Timestamp so the option kind begins at offset 2 mod 4.
++		for offset == 0 || offset%4 != 2 {
++			offset += header.EncodeNOP(options[offset:])
++		}
++		offset += header.EncodeTSOption(opts.TSVal, opts.TSEcr, options[offset:])
++	}
++
++	if offset%4 != 0 {
++		// TCP End of Option List is zero; the remaining bytes are zero padding.
++		options[offset] = 0
++		offset++
++		for offset%4 != 0 {
++			options[offset] = 0
++			offset++
++		}
++	}
++	return options[:offset]
++}
++
++func makeSynOptions(opts header.TCPSynOptions, macOSLike bool) []byte {
++	if macOSLike {
++		return makeDarwinSynOptions(opts)
++	}
++	return makeDefaultSynOptions(opts)
++}
++
+ // tcpFields is a struct to carry different parameters required by the
+ // send*TCP variant functions below.
+ type tcpFields struct {
+@@ -819,7 +860,7 @@
+ }
+ 
+ func (e *Endpoint) sendSynTCP(r *stack.Route, tf tcpFields, opts header.TCPSynOptions) tcpip.Error {
+-	tf.opts = makeSynOptions(opts)
++	tf.opts = makeSynOptions(opts, e.stack.MacOSLike())
+ 	// We ignore SYN send errors and let the callers re-attempt send.
+ 	hdrSize := header.TCPMinimumSize + int(r.MaxHeaderLength()) + len(tf.opts)
+ 	if r.NetProto() == header.IPv6ProtocolNumber && tf.expOptVal != 0 {

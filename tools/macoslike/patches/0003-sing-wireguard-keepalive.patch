@@ -1,0 +1,26 @@
+--- a/vendor/github.com/metacubex/sing-wireguard/gonet.go
++++ b/vendor/github.com/metacubex/sing-wireguard/gonet.go
+@@ -68,12 +68,17 @@
+ 		}
+ 	}
+ 
+-	// sing-box added: set keepalive
+-	ep.SocketOptions().SetKeepAlive(true)
+-	keepAliveIdle := tcpip.KeepaliveIdleOption(15 * time.Second)
+-	ep.SetSockOpt(&keepAliveIdle)
+-	keepAliveInterval := tcpip.KeepaliveIntervalOption(15 * time.Second)
+-	ep.SetSockOpt(&keepAliveInterval)
++	// Preserve the historical sing-wireguard 15-second keepalive only for
++	// ordinary stacks. A normal macOS socket does not have SO_KEEPALIVE forced
++	// on for every outbound connection, so the macOS-like profile leaves it off
++	// unless the application explicitly requests it.
++	if !s.MacOSLike() {
++		ep.SocketOptions().SetKeepAlive(true)
++		keepAliveIdle := tcpip.KeepaliveIdleOption(15 * time.Second)
++		ep.SetSockOpt(&keepAliveIdle)
++		keepAliveInterval := tcpip.KeepaliveIntervalOption(15 * time.Second)
++		ep.SetSockOpt(&keepAliveInterval)
++	}
+ 
+ 	return gonet.NewTCPConn(&wq, ep), nil
+ }

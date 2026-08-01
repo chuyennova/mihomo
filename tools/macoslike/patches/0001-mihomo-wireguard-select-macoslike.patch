@@ -1,0 +1,11 @@
+--- a/adapter/outbound/wireguard.go
++++ b/adapter/outbound/wireguard.go
+@@ -264,7 +264,7 @@
+ 	if len(outbound.localPrefixes) == 0 {
+ 		return nil, E.New("missing local address")
+ 	}
+-	outbound.tunDevice, err = wireguard.NewStackDevice(outbound.localPrefixes, uint32(mtu))
++	outbound.tunDevice, err = wireguard.NewStackDeviceMacOSLike(outbound.localPrefixes, uint32(mtu))
+ 	if err != nil {
+ 		return nil, E.Cause(err, "create WireGuard device")
+ 	}
