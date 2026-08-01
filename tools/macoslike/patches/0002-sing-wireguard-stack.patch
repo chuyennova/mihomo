@@ -1,6 +1,6 @@
 --- a/vendor/github.com/metacubex/sing-wireguard/device_stack.go
 +++ b/vendor/github.com/metacubex/sing-wireguard/device_stack.go
-@@ -42,14 +42,37 @@
+@@ -42,14 +42,39 @@
  	dispatcher stack.NetworkDispatcher
  	addr4      tcpip.Address
  	addr6      tcpip.Address
@@ -20,13 +20,15 @@
 +
 +func newStackDevice(localAddresses []netip.Prefix, mtu uint32, macOSLike bool) (*StackDevice, error) {
 +	var tcpProtocol stack.TransportProtocolFactory = tcp.NewProtocol
++	var udpProtocol stack.TransportProtocolFactory = udp.NewProtocol
 +	if macOSLike {
 +		tcpProtocol = tcp.NewProtocolMacOSLike
++		udpProtocol = udp.NewProtocolMacOSLike
 +	}
  	ipStack := stack.New(stack.Options{
  		NetworkProtocols:   []stack.NetworkProtocolFactory{ipv4.NewProtocol, ipv6.NewProtocol},
 -		TransportProtocols: []stack.TransportProtocolFactory{tcp.NewProtocol, udp.NewProtocol, icmp.NewProtocol4, icmp.NewProtocol6},
-+		TransportProtocols: []stack.TransportProtocolFactory{tcpProtocol, udp.NewProtocol, icmp.NewProtocol4, icmp.NewProtocol6},
++		TransportProtocols: []stack.TransportProtocolFactory{tcpProtocol, udpProtocol, icmp.NewProtocol4, icmp.NewProtocol6},
  		HandleLocal:        true,
  	})
 +	if macOSLike {
@@ -39,7 +41,7 @@
  	ctx, cancel := context.WithCancel(context.Background())
  	tunDevice := &StackDevice{
  		stack:     ipStack,
-@@ -58,6 +81,7 @@
+@@ -58,6 +83,7 @@
  		outbound:  make(chan *stack.PacketBuffer, 256),
  		ctx:       ctx,
  		ctxCancel: cancel,
@@ -47,7 +49,7 @@
  	}
  	err := ipStack.CreateNIC(defaultNIC, (*wireEndpoint)(tunDevice))
  	if err != nil {
-@@ -115,7 +139,11 @@
+@@ -115,7 +141,11 @@
  	}
  	switch N.NetworkName(network) {
  	case N.NetworkTCP:

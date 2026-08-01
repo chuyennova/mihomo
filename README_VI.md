@@ -1,23 +1,27 @@
-# Mihomo v1.19.29 — Windows macOS-like WireGuard v2
+# Mihomo v1.19.29 — Windows macOS-like WireGuard v3.2 IPv6
 
-Bộ overlay này dùng cho nhánh `macoslike-v1.19.29` tạo từ tag gốc `v1.19.29`.
-Nó không dùng nhánh Windows Winsock cũ.
+Bộ overlay này dùng cho nhánh `macoslike-v1.19.29` được tạo trực tiếp từ tag gốc `v1.19.29`. Nó giữ nguyên kiến trúc nhiều SOCKS → nhiều WireGuard của Mihomo và chỉ thay profile userspace network stack của WireGuard.
 
-## Cách đưa lên GitHub
+## Cách cập nhật trên GitHub
 
-Chép đè toàn bộ nội dung overlay vào thư mục gốc repository. Các file cũ trong:
-
-- `.github/workflows/build-windows-macoslike.yml`
-- `tools/macoslike/`
-
-phải được thay bằng bản v2 này. Sau đó commit trực tiếp vào nhánh `macoslike-v1.19.29` và chạy workflow **Build Windows macOS-like Mihomo v2**.
-
-## Artifact
-
-Workflow tạo:
+Chép đè toàn bộ nội dung ZIP vào thư mục gốc repository, đặc biệt:
 
 ```text
-verge-mihomo-windows-macoslike-v2-amd64.zip
+.github/workflows/build-windows-macoslike.yml
+tools/macoslike/
+README_VI.md
+```
+
+Commit vào nhánh `macoslike-v1.19.29`, rồi chạy workflow:
+
+```text
+Build Windows macOS-like Mihomo v3.2 IPv6
+```
+
+Artifact tạo ra:
+
+```text
+verge-mihomo-windows-macoslike-v3.2-ipv6-amd64.zip
 ├── verge-mihomo.exe
 ├── wintun.dll
 ├── BUILD_INFO.txt
@@ -26,32 +30,42 @@ verge-mihomo-windows-macoslike-v2-amd64.zip
 └── LICENSE-wintun.txt
 ```
 
-Tên `verge-mihomo.exe` và `wintun.dll` giữ đúng để Clash Verge sử dụng.
+Hai tên `verge-mihomo.exe` và `wintun.dll` được giữ đúng để Clash Verge sử dụng.
 
-## Phạm vi patch
+## Phạm vi
 
-Chỉ WireGuard outbound dùng profile mới. OpenVPN, MASQUE, listener, tunnel, rule và cơ chế nhiều cổng SOCKS giữ nguyên.
-
-Mỗi WireGuard vẫn tạo một gVisor stack riêng:
+Chỉ `adapter/outbound/wireguard.go` chọn constructor macOS-like. OpenVPN, MASQUE, listener, tunnel, rule và cơ chế `listeners[].proxy` không bị đổi.
 
 ```text
-SOCKS 10881 -> WG-01 -> stack 01
-SOCKS 10882 -> WG-02 -> stack 02
-SOCKS 10883 -> WG-03 -> stack 03
+SOCKS 10881 → WG-01 → stack macOS-like 01
+SOCKS 10882 → WG-02 → stack macOS-like 02
+SOCKS 10883 → WG-03 → stack macOS-like 03
 ```
 
-## Sửa lỗi của v1
+Mỗi WireGuard vẫn có TCP, UDP, source-port allocator và trạng thái lỗi riêng.
 
-Bản v1 cho ra `window=26368`, `WS=7`, DF tắt và option order chưa đúng. Bản v2 sửa chính xác đường tạo active SYN:
+## Khác biệt so với v2
 
-- Window: `65535`
-- Window Scale: `4`
-- TTL/Hop Limit mặc định: `64`
-- IPv4 DF: bật trên SYN
-- IPv4 ID: `0` cho atomic datagram
-- TCP options: `MSS,NOP,WS,NOP,NOP,TS,SACK,EOL+padding`
-- Ephemeral port nội bộ: `49152-65535`
-- Không cưỡng chế keepalive 15 giây cho profile này
-- MSS vẫn tính từ MTU thực tế, không ép sai thành 1460
+V2 đã làm đúng TCP SYN IPv4 và phần TCP dùng chung cho IPv6. V3.2 giữ lớp IPv6 của v3, sửa lỗi tương thích UDP forwarder và làm bộ sinh Flow Label gần hành vi XNU hơn:
 
-Xem `tools/macoslike/EXPECTED_FINGERPRINT.md` trước khi kiểm thử.
+- Đưa `IPv6FlowLabel` từ transport xuống đúng IPv6 base header.
+- TCP/IPv6 nhận một Flow Label ngẫu nhiên 20-bit và giữ ổn định suốt một kết nối. Giá trị 0 rất hiếm nhưng được giữ lại vì XNU cũng chỉ lấy số ngẫu nhiên rồi mask 20 bit.
+- UDP/IPv6, bao gồm luồng nền cho QUIC khi đi qua UDP, nhận một Flow Label ổn định theo socket; sau disconnect sẽ cấp nhãn mới.
+- Hop Limit vẫn là `64`.
+- Traffic Class giữ theo socket; mặc định bình thường là `0` khi không bật ECN/DSCP.
+- Không tự thêm extension header vào gói TCP SYN/UDP thông thường.
+- MSS vẫn tính theo MTU thật: MTU `1360` cho IPv4 MSS `1320`, IPv6 MSS `1300`.
+
+## Dấu vết TCP giữ từ v2
+
+```text
+Window:            65535
+Window Scale:      4
+TCP options:       MSS,NOP,WS,NOP,NOP,TS,SACK,EOL+padding
+IPv4 TTL:          64
+IPv4 DF:           bật trên SYN
+Atomic IPv4 ID:    0
+Source-port stack: 49152–65535
+```
+
+Đọc `tools/macoslike/EXPECTED_FINGERPRINT.md` và `TEST_AFTER_BUILD.md` trước khi kiểm thử.

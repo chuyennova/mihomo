@@ -1,0 +1,242 @@
+--- a/vendor/github.com/metacubex/gvisor/pkg/tcpip/stack/registration.go
++++ b/vendor/github.com/metacubex/gvisor/pkg/tcpip/stack/registration.go
+@@ -389,6 +389,10 @@
+ 	// TOS refers to TypeOfService or TrafficClass field of the IP-header.
+ 	TOS uint8
+ 
++	// IPv6FlowLabel is the 20-bit Flow Label used only for IPv6 packets.
++	// IPv4 network endpoints ignore this field.
++	IPv6FlowLabel uint32
++
+ 	// DF indicates whether the DF bit should be set.
+ 	DF bool
+ 
+--- a/vendor/github.com/metacubex/gvisor/pkg/tcpip/network/ipv6/ipv6.go
++++ b/vendor/github.com/metacubex/gvisor/pkg/tcpip/network/ipv6/ipv6.go
+@@ -751,6 +751,7 @@
+ 		TransportProtocol: params.Protocol,
+ 		HopLimit:          params.TTL,
+ 		TrafficClass:      params.TOS,
++		FlowLabel:         params.IPv6FlowLabel & 0x000fffff,
+ 		SrcAddr:           srcAddr,
+ 		DstAddr:           dstAddr,
+ 		ExtensionHeaders:  extensionHeaders,
+--- a/vendor/github.com/metacubex/gvisor/pkg/tcpip/transport/tcp/protocol.go
++++ b/vendor/github.com/metacubex/gvisor/pkg/tcpip/transport/tcp/protocol.go
+@@ -545,6 +545,12 @@
+ 	return newProtocol(s, ccCubic, nil, true)
+ }
+ 
++// newIPv6FlowLabel provides an XNU-like random value masked to the 20-bit
++// IPv6 Flow Label field. A zero label is statistically possible and is kept.
++func (p *protocol) newIPv6FlowLabel() uint32 {
++	return p.stack.SecureRNG().Uint32() & 0x000fffff
++}
++
+ // NewProtocolProbe returns a TCP transport protocol with Reno congestion
+ // control and the given probe.
+ //
+--- a/vendor/github.com/metacubex/gvisor/pkg/tcpip/transport/tcp/endpoint.go
++++ b/vendor/github.com/metacubex/gvisor/pkg/tcpip/transport/tcp/endpoint.go
+@@ -421,6 +421,7 @@
+ 	route             *stack.Route `state:"nosave"`
+ 	ipv4TTL           uint8
+ 	ipv6HopLimit      int16
++	ipv6FlowLabel     uint32
+ 	isConnectNotified bool
+ 
+ 	// h stores a reference to the current handshake state if the endpoint is in
+@@ -873,6 +874,9 @@
+ 		maxSynRetries: DefaultSynRetries,
+ 		limRdr:        &io.LimitedReader{},
+ 	}
++	if protocol.macOSLike && netProto == header.IPv6ProtocolNumber {
++		e.ipv6FlowLabel = protocol.newIPv6FlowLabel()
++	}
+ 	e.ops.InitHandler(e, e.stack, GetTCPSendBufferLimits, GetTCPReceiveBufferLimits)
+ 	e.ops.SetMulticastLoop(true)
+ 	e.ops.SetQuickAck(true)
+--- a/vendor/github.com/metacubex/gvisor/pkg/tcpip/transport/tcp/connect.go
++++ b/vendor/github.com/metacubex/gvisor/pkg/tcpip/transport/tcp/connect.go
+@@ -843,17 +843,18 @@
+ // tcpFields is a struct to carry different parameters required by the
+ // send*TCP variant functions below.
+ type tcpFields struct {
+-	id        stack.TransportEndpointID
+-	ttl       uint8
+-	tos       uint8
+-	flags     header.TCPFlags
+-	seq       seqnum.Value
+-	ack       seqnum.Value
+-	rcvWnd    seqnum.Size
+-	opts      []byte
+-	txHash    uint32
+-	df        bool
+-	expOptVal uint16
++	id            stack.TransportEndpointID
++	ttl           uint8
++	tos           uint8
++	ipv6FlowLabel uint32
++	flags         header.TCPFlags
++	seq           seqnum.Value
++	ack           seqnum.Value
++	rcvWnd        seqnum.Size
++	opts          []byte
++	txHash        uint32
++	df            bool
++	expOptVal     uint16
+ }
+ 
+ func (e *Endpoint) sendSynTCP(r *stack.Route, tf tcpFields, opts header.TCPSynOptions) tcpip.Error {
+@@ -880,6 +881,9 @@
+ // This method takes ownership of pkt.
+ func (e *Endpoint) sendTCP(r *stack.Route, tf tcpFields, pkt *stack.PacketBuffer, gso stack.GSO) tcpip.Error {
+ 	tf.txHash = e.txHash
++	if r.NetProto() == header.IPv6ProtocolNumber {
++		tf.ipv6FlowLabel = e.ipv6FlowLabel
++	}
+ 	if err := sendTCP(r, tf, pkt, gso, e.owner); err != nil {
+ 		e.stats.SendErrors.SegmentSendToNetworkFailed.Increment()
+ 		return err
+@@ -958,6 +962,7 @@
+ 			Protocol:              ProtocolNumber,
+ 			TTL:                   tf.ttl,
+ 			TOS:                   tf.tos,
++			IPv6FlowLabel:         tf.ipv6FlowLabel,
+ 			DF:                    tf.df,
+ 			ExperimentOptionValue: tf.expOptVal,
+ 		}, pkt); err != nil {
+@@ -996,6 +1001,7 @@
+ 		Protocol:              ProtocolNumber,
+ 		TTL:                   tf.ttl,
+ 		TOS:                   tf.tos,
++		IPv6FlowLabel:         tf.ipv6FlowLabel,
+ 		DF:                    tf.df,
+ 		ExperimentOptionValue: tf.expOptVal,
+ 	}, pkt); err != nil {
+--- a/vendor/github.com/metacubex/gvisor/pkg/tcpip/transport/udp/protocol.go
++++ b/vendor/github.com/metacubex/gvisor/pkg/tcpip/transport/udp/protocol.go
+@@ -45,7 +45,12 @@
+ 
+ // +stateify savable
+ type protocol struct {
+-	stack *stack.Stack
++	stack     *stack.Stack
++	macOSLike bool `state:"nosave"`
++}
++
++func (p *protocol) newIPv6FlowLabel() uint32 {
++	return p.stack.SecureRNG().Uint32() & 0x000fffff
+ }
+ 
+ // Number returns the udp protocol number.
+@@ -55,7 +60,12 @@
+ 
+ // NewEndpoint creates a new udp endpoint.
+ func (p *protocol) NewEndpoint(netProto tcpip.NetworkProtocolNumber, waiterQueue *waiter.Queue) (tcpip.Endpoint, tcpip.Error) {
+-	return newEndpoint(p.stack, netProto, waiterQueue), nil
++	ep := newEndpoint(p.stack, netProto, waiterQueue)
++	ep.protocol = p
++	if p.macOSLike && netProto == header.IPv6ProtocolNumber {
++		ep.net.SetIPv6FlowLabel(p.newIPv6FlowLabel())
++	}
++	return ep, nil
+ }
+ 
+ // NewRawEndpoint creates a new raw UDP endpoint. It implements
+@@ -136,3 +146,9 @@
+ func NewProtocol(s *stack.Stack) stack.TransportProtocol {
+ 	return &protocol{stack: s}
+ }
++
++// NewProtocolMacOSLike selects the XNU-like IPv6 flow-label behavior only
++// for the independent WireGuard stack that opts into this constructor.
++func NewProtocolMacOSLike(s *stack.Stack) stack.TransportProtocol {
++	return &protocol{stack: s, macOSLike: true}
++}
+--- a/vendor/github.com/metacubex/gvisor/pkg/tcpip/transport/udp/endpoint.go
++++ b/vendor/github.com/metacubex/gvisor/pkg/tcpip/transport/udp/endpoint.go
+@@ -64,6 +64,7 @@
+ 	stack       *stack.Stack
+ 	waiterQueue *waiter.Queue
+ 	net         network.Endpoint
++	protocol    *protocol `state:"nosave"`
+ 	stats       tcpip.TransportEndpointStats
+ 	ops         tcpip.SocketOptions
+ 
+@@ -640,6 +641,9 @@
+ 	e.remotePort = id.RemotePort
+ 
+ 	e.net.Disconnect()
++	if e.protocol != nil && e.protocol.macOSLike && e.net.NetProto() == header.IPv6ProtocolNumber {
++		e.net.SetIPv6FlowLabel(e.protocol.newIPv6FlowLabel())
++	}
+ 
+ 	return nil
+ }
+--- a/vendor/github.com/metacubex/gvisor/pkg/tcpip/transport/internal/network/endpoint.go
++++ b/vendor/github.com/metacubex/gvisor/pkg/tcpip/transport/internal/network/endpoint.go
+@@ -73,6 +73,8 @@
+ 	ipv4TOS uint8
+ 	// +checklocks:mu
+ 	ipv6TClass uint8
++	// +checklocks:mu
++	ipv6FlowLabel uint32
+ 
+ 	// Lock ordering: mu > infoMu.
+ 	infoMu sync.RWMutex `state:"nosave"`
+@@ -155,6 +157,14 @@
+ 	return e.netProto
+ }
+ 
++// SetIPv6FlowLabel sets the per-socket 20-bit IPv6 Flow Label. A zero value
++// disables flow labeling. IPv4 ignores the field.
++func (e *Endpoint) SetIPv6FlowLabel(label uint32) {
++	e.mu.Lock()
++	e.ipv6FlowLabel = label & 0x000fffff
++	e.mu.Unlock()
++}
++
+ // setEndpointState sets the state of the endpoint.
+ //
+ // e.mu must be held to synchronize changes to state with the rest of the
+@@ -225,10 +235,11 @@
+ 
+ // WriteContext holds the context for a write.
+ type WriteContext struct {
+-	e     *Endpoint
+-	route *stack.Route
+-	ttl   uint8
+-	tos   uint8
++	e             *Endpoint
++	route         *stack.Route
++	ttl           uint8
++	tos           uint8
++	ipv6FlowLabel uint32
+ }
+ 
+ func (c *WriteContext) MTU() uint32 {
+@@ -360,6 +371,7 @@
+ 		Protocol:              c.e.transProto,
+ 		TTL:                   c.ttl,
+ 		TOS:                   c.tos,
++		IPv6FlowLabel:         c.ipv6FlowLabel,
+ 		ExperimentOptionValue: expOptVal,
+ 	}, pkt)
+ 
+@@ -567,10 +579,11 @@
+ 	}
+ 
+ 	return WriteContext{
+-		e:     e,
+-		route: route,
+-		ttl:   ttl,
+-		tos:   tos,
++		e:             e,
++		route:         route,
++		ttl:           ttl,
++		tos:           tos,
++		ipv6FlowLabel: e.ipv6FlowLabel,
+ 	}, nil
+ }
+ 

@@ -1,20 +1,40 @@
-# Trạng thái profile v2
+# Trạng thái profile v3.2 IPv6
 
-Đã chỉnh:
+## Đã chỉnh và khóa theo từng WireGuard stack
 
-- Đường active-open TCP SYN của WireGuard.
-- Window 65535 và Window Scale 4.
-- Option order và EOL padding theo profile XNU/macOS phổ biến.
-- DF trên SYN; gVisor để IPv4 ID bằng 0 cho atomic datagram.
-- Dải source port per-stack 49152-65535.
-- Bỏ forced keepalive 15 giây cho WireGuard profile mới.
-- Cô lập profile theo từng WireGuard stack.
+### TCP chung cho IPv4 và IPv6
 
-Giữ nguyên có chủ đích:
+- Active-open Window `65535`.
+- Window Scale `4`.
+- TCP options `MSS,NOP,WS,NOP,NOP,TS,SACK,EOL+padding`.
+- Dải source port nội bộ `49152–65535`.
+- SACK, Timestamp và CUBIC.
+- Không cưỡng chế keepalive `15 giây`.
 
-- MSS theo route MTU.
-- TTL/Hop Limit 64 vốn đã phù hợp.
-- SACK và CUBIC.
-- Listener nhiều SOCKS và SpecialProxy.
+### IPv4
 
-Chưa cam kết mô phỏng hoàn toàn mọi hành vi XNU dài hạn như recovery, delayed ACK, ISN và mọi biến thể theo phiên bản macOS. Cần đo PCAP ngoài Internet để hiệu chỉnh tiếp.
+- Initial TTL `64`.
+- SYN bật DF.
+- Atomic IPv4 datagram có ID `0`.
+- MSS lấy từ MTU thật.
+
+### IPv6
+
+- Initial Hop Limit `64`.
+- MSS lấy từ MTU thật, gồm header IPv6 40 byte.
+- Traffic Class lấy từ socket; mặc định `0` khi ứng dụng không đặt DSCP/ECN.
+- Không tự thêm extension header vào traffic thông thường.
+- Flow Label ngẫu nhiên 20-bit theo đúng phép mask của XNU; giá trị `0` rất hiếm nhưng hợp lệ:
+  - TCP: cấp một lần cho endpoint và giữ nguyên trong kết nối.
+  - UDP: cấp một lần cho socket; cấp mới sau disconnect.
+- Flow Label chỉ được bật ở stack WireGuard macOS-like; stack mặc định không đổi.
+
+## Không cam kết quá mức
+
+Bản này đảm bảo core phát đúng profile được định nghĩa ở trên. Nó không tuyên bố sao chép bit-for-bit mọi biến thể của mọi phiên bản macOS, vì XNU và cấu hình runtime có thể thay đổi theo phiên bản, ứng dụng, MTU, ECN và route. Các hành vi dài hạn như delayed ACK, recovery, RTO, ISN và toàn bộ ICMPv6/PMTUD vẫn cần PCAP ngoài Internet nếu muốn hiệu chỉnh sâu hơn.
+
+## Sửa lỗi tương thích gVisor UDP trong v3.2
+
+- Không thay chữ ký hàm nội bộ `udp.newEndpoint`, vì `udp/forwarder.go` cũng gọi hàm này.
+- Endpoint tạo qua protocol macOS-like được gắn profile sau khi constructor gốc hoàn tất.
+- Endpoint tạo bởi UDP forwarder vẫn dùng hành vi mặc định và không bị nil-pointer khi disconnect.

@@ -378,12 +378,375 @@ func makeSynOptions(opts header.TCPSynOptions, macOSLike bool) []byte {
     write(path, text)
 
 
+
+def patch_sing_ipv6_udp(root: pathlib.Path) -> None:
+    path = root / "vendor/github.com/metacubex/sing-wireguard/device_stack.go"
+    text = read(path)
+    text = replace_once(
+        text,
+        """\tvar tcpProtocol stack.TransportProtocolFactory = tcp.NewProtocol
+\tif macOSLike {
+\t\ttcpProtocol = tcp.NewProtocolMacOSLike
+\t}
+\tipStack := stack.New(stack.Options{
+\t\tNetworkProtocols:   []stack.NetworkProtocolFactory{ipv4.NewProtocol, ipv6.NewProtocol},
+\t\tTransportProtocols: []stack.TransportProtocolFactory{tcpProtocol, udp.NewProtocol, icmp.NewProtocol4, icmp.NewProtocol6},
+\t\tHandleLocal:        true,
+\t})
+""",
+        """\tvar tcpProtocol stack.TransportProtocolFactory = tcp.NewProtocol
+\tvar udpProtocol stack.TransportProtocolFactory = udp.NewProtocol
+\tif macOSLike {
+\t\ttcpProtocol = tcp.NewProtocolMacOSLike
+\t\tudpProtocol = udp.NewProtocolMacOSLike
+\t}
+\tipStack := stack.New(stack.Options{
+\t\tNetworkProtocols:   []stack.NetworkProtocolFactory{ipv4.NewProtocol, ipv6.NewProtocol},
+\t\tTransportProtocols: []stack.TransportProtocolFactory{tcpProtocol, udpProtocol, icmp.NewProtocol4, icmp.NewProtocol6},
+\t\tHandleLocal:        true,
+\t})
+""",
+        "sing-wireguard macOS-like UDP protocol",
+    )
+    write(path, text)
+
+
+def patch_gvisor_ipv6_flowlabel(root: pathlib.Path) -> None:
+    # Extend the transport-to-network header contract with a 20-bit flow label.
+    path = root / "vendor/github.com/metacubex/gvisor/pkg/tcpip/stack/registration.go"
+    text = read(path)
+    text = replace_once(
+        text,
+        """\t// TOS refers to TypeOfService or TrafficClass field of the IP-header.
+\tTOS uint8
+
+\t// DF indicates whether the DF bit should be set.
+""",
+        """\t// TOS refers to TypeOfService or TrafficClass field of the IP-header.
+\tTOS uint8
+
+\t// IPv6FlowLabel is the 20-bit Flow Label used only for IPv6 packets.
+\t// IPv4 network endpoints ignore this field.
+\tIPv6FlowLabel uint32
+
+\t// DF indicates whether the DF bit should be set.
+""",
+        "gVisor NetworkHeaderParams IPv6 Flow Label",
+    )
+    write(path, text)
+
+    # Encode the value into the real IPv6 base header.
+    path = root / "vendor/github.com/metacubex/gvisor/pkg/tcpip/network/ipv6/ipv6.go"
+    text = read(path)
+    text = replace_once(
+        text,
+        """\t\tHopLimit:          params.TTL,
+\t\tTrafficClass:      params.TOS,
+\t\tSrcAddr:           srcAddr,
+""",
+        """\t\tHopLimit:          params.TTL,
+\t\tTrafficClass:      params.TOS,
+\t\tFlowLabel:         params.IPv6FlowLabel & 0x000fffff,
+\t\tSrcAddr:           srcAddr,
+""",
+        "gVisor IPv6 header Flow Label encoding",
+    )
+    write(path, text)
+
+    # TCP uses one random 20-bit label for the lifetime of an IPv6 endpoint,
+    # matching XNU's automatic per-PCB flow-label model.
+    path = root / "vendor/github.com/metacubex/gvisor/pkg/tcpip/transport/tcp/protocol.go"
+    text = read(path)
+    text = replace_once(
+        text,
+        """func NewProtocolMacOSLike(s *stack.Stack) stack.TransportProtocol {
+\treturn newProtocol(s, ccCubic, nil, true)
+}
+""",
+        """func NewProtocolMacOSLike(s *stack.Stack) stack.TransportProtocol {
+\treturn newProtocol(s, ccCubic, nil, true)
+}
+
+// newIPv6FlowLabel provides an XNU-like random value masked to the 20-bit
+// IPv6 Flow Label field. A zero label is statistically possible and is kept.
+func (p *protocol) newIPv6FlowLabel() uint32 {
+\treturn p.stack.SecureRNG().Uint32() & 0x000fffff
+}
+""",
+        "gVisor TCP random IPv6 Flow Label generator",
+    )
+    write(path, text)
+
+    path = root / "vendor/github.com/metacubex/gvisor/pkg/tcpip/transport/tcp/endpoint.go"
+    text = read(path)
+    text = replace_once(
+        text,
+        """\troute             *stack.Route `state:\"nosave\"`
+\tipv4TTL           uint8
+\tipv6HopLimit      int16
+\tisConnectNotified bool
+""",
+        """\troute             *stack.Route `state:\"nosave\"`
+\tipv4TTL           uint8
+\tipv6HopLimit      int16
+\tipv6FlowLabel     uint32
+\tisConnectNotified bool
+""",
+        "gVisor TCP endpoint IPv6 Flow Label field",
+    )
+    text = replace_once(
+        text,
+        """\te.ops.InitHandler(e, e.stack, GetTCPSendBufferLimits, GetTCPReceiveBufferLimits)
+""",
+        """\tif protocol.macOSLike && netProto == header.IPv6ProtocolNumber {
+\t\te.ipv6FlowLabel = protocol.newIPv6FlowLabel()
+\t}
+\te.ops.InitHandler(e, e.stack, GetTCPSendBufferLimits, GetTCPReceiveBufferLimits)
+""",
+        "gVisor TCP endpoint Flow Label initialization",
+    )
+    write(path, text)
+
+    path = root / "vendor/github.com/metacubex/gvisor/pkg/tcpip/transport/tcp/connect.go"
+    text = read(path)
+    text = replace_once(
+        text,
+        """\ttos       uint8
+\tflags     header.TCPFlags
+""",
+        """\ttos           uint8
+\tipv6FlowLabel uint32
+\tflags         header.TCPFlags
+""",
+        "gVisor TCP fields IPv6 Flow Label",
+    )
+    text = replace_once(
+        text,
+        """func (e *Endpoint) sendTCP(r *stack.Route, tf tcpFields, pkt *stack.PacketBuffer, gso stack.GSO) tcpip.Error {
+\ttf.txHash = e.txHash
+""",
+        """func (e *Endpoint) sendTCP(r *stack.Route, tf tcpFields, pkt *stack.PacketBuffer, gso stack.GSO) tcpip.Error {
+\ttf.txHash = e.txHash
+\tif r.NetProto() == header.IPv6ProtocolNumber {
+\t\ttf.ipv6FlowLabel = e.ipv6FlowLabel
+\t}
+""",
+        "gVisor TCP packet Flow Label selection",
+    )
+    text = replace_once(
+        text,
+        """\t\t\tTOS:                   tf.tos,
+\t\t\tDF:                    tf.df,
+""",
+        """\t\t\tTOS:                   tf.tos,
+\t\t\tIPv6FlowLabel:         tf.ipv6FlowLabel,
+\t\t\tDF:                    tf.df,
+""",
+        "gVisor TCP batch IPv6 Flow Label",
+    )
+    text = replace_once(
+        text,
+        """\t\tTOS:                   tf.tos,
+\t\tDF:                    tf.df,
+""",
+        """\t\tTOS:                   tf.tos,
+\t\tIPv6FlowLabel:         tf.ipv6FlowLabel,
+\t\tDF:                    tf.df,
+""",
+        "gVisor TCP packet IPv6 Flow Label",
+    )
+    write(path, text)
+
+    # UDP also gets a distinct macOS-like transport protocol so QUIC/UDP uses
+    # a stable random label per UDP socket, not TCP-only behavior.
+    path = root / "vendor/github.com/metacubex/gvisor/pkg/tcpip/transport/udp/protocol.go"
+    text = read(path)
+    text = replace_once(
+        text,
+        """type protocol struct {
+\tstack *stack.Stack
+}
+""",
+        """type protocol struct {
+\tstack     *stack.Stack
+\tmacOSLike bool `state:\"nosave\"`
+}
+
+func (p *protocol) newIPv6FlowLabel() uint32 {
+\treturn p.stack.SecureRNG().Uint32() & 0x000fffff
+}
+""",
+        "gVisor UDP profile and Flow Label generator",
+    )
+    text = replace_once(
+        text,
+        """func (p *protocol) NewEndpoint(netProto tcpip.NetworkProtocolNumber, waiterQueue *waiter.Queue) (tcpip.Endpoint, tcpip.Error) {
+\treturn newEndpoint(p.stack, netProto, waiterQueue), nil
+}
+""",
+        """func (p *protocol) NewEndpoint(netProto tcpip.NetworkProtocolNumber, waiterQueue *waiter.Queue) (tcpip.Endpoint, tcpip.Error) {
+\tep := newEndpoint(p.stack, netProto, waiterQueue)
+\tep.protocol = p
+\tif p.macOSLike && netProto == header.IPv6ProtocolNumber {
+\t\tep.net.SetIPv6FlowLabel(p.newIPv6FlowLabel())
+\t}
+\treturn ep, nil
+}
+""",
+        "gVisor UDP endpoint constructor",
+    )
+    text = replace_once(
+        text,
+        """func NewProtocol(s *stack.Stack) stack.TransportProtocol {
+\treturn &protocol{stack: s}
+}
+""",
+        """func NewProtocol(s *stack.Stack) stack.TransportProtocol {
+\treturn &protocol{stack: s}
+}
+
+// NewProtocolMacOSLike selects the XNU-like IPv6 flow-label behavior only
+// for the independent WireGuard stack that opts into this constructor.
+func NewProtocolMacOSLike(s *stack.Stack) stack.TransportProtocol {
+\treturn &protocol{stack: s, macOSLike: true}
+}
+""",
+        "gVisor UDP macOS-like constructor",
+    )
+    write(path, text)
+
+    path = root / "vendor/github.com/metacubex/gvisor/pkg/tcpip/transport/udp/endpoint.go"
+    text = read(path)
+    text = replace_once(
+        text,
+        """\tstack       *stack.Stack
+\twaiterQueue *waiter.Queue
+\tnet         network.Endpoint
+""",
+        """\tstack       *stack.Stack
+\twaiterQueue *waiter.Queue
+\tnet         network.Endpoint
+\tprotocol    *protocol `state:"nosave"`
+""",
+        "gVisor UDP endpoint protocol field",
+    )
+    text = replace_once(
+        text,
+        """\te.net.Disconnect()
+
+\treturn nil
+}
+""",
+        """\te.net.Disconnect()
+\tif e.protocol != nil && e.protocol.macOSLike && e.net.NetProto() == header.IPv6ProtocolNumber {
+\t\te.net.SetIPv6FlowLabel(e.protocol.newIPv6FlowLabel())
+\t}
+
+\treturn nil
+}
+""",
+        "gVisor UDP Flow Label refresh after disconnect",
+    )
+    write(path, text)
+
+    path = root / "vendor/github.com/metacubex/gvisor/pkg/tcpip/transport/internal/network/endpoint.go"
+    text = read(path)
+    text = replace_once(
+        text,
+        """\t// +checklocks:mu
+\tipv6TClass uint8
+""",
+        """\t// +checklocks:mu
+\tipv6TClass uint8
+\t// +checklocks:mu
+\tipv6FlowLabel uint32
+""",
+        "gVisor datagram endpoint IPv6 Flow Label field",
+    )
+    text = replace_once(
+        text,
+        """func (e *Endpoint) NetProto() tcpip.NetworkProtocolNumber {
+\treturn e.netProto
+}
+""",
+        """func (e *Endpoint) NetProto() tcpip.NetworkProtocolNumber {
+\treturn e.netProto
+}
+
+// SetIPv6FlowLabel sets the per-socket 20-bit IPv6 Flow Label. A zero value
+// disables flow labeling. IPv4 ignores the field.
+func (e *Endpoint) SetIPv6FlowLabel(label uint32) {
+\te.mu.Lock()
+\te.ipv6FlowLabel = label & 0x000fffff
+\te.mu.Unlock()
+}
+""",
+        "gVisor datagram Flow Label setter",
+    )
+    text = replace_once(
+        text,
+        """type WriteContext struct {
+\te     *Endpoint
+\troute *stack.Route
+\tttl   uint8
+\ttos   uint8
+}
+""",
+        """type WriteContext struct {
+\te             *Endpoint
+\troute         *stack.Route
+\tttl           uint8
+\ttos           uint8
+\tipv6FlowLabel uint32
+}
+""",
+        "gVisor datagram WriteContext Flow Label",
+    )
+    text = replace_once(
+        text,
+        """\t\tProtocol:              c.e.transProto,
+\t\tTTL:                   c.ttl,
+\t\tTOS:                   c.tos,
+\t\tExperimentOptionValue: expOptVal,
+""",
+        """\t\tProtocol:              c.e.transProto,
+\t\tTTL:                   c.ttl,
+\t\tTOS:                   c.tos,
+\t\tIPv6FlowLabel:         c.ipv6FlowLabel,
+\t\tExperimentOptionValue: expOptVal,
+""",
+        "gVisor datagram NetworkHeaderParams Flow Label",
+    )
+    text = replace_once(
+        text,
+        """\treturn WriteContext{
+\t\te:     e,
+\t\troute: route,
+\t\tttl:   ttl,
+\t\ttos:   tos,
+\t}, nil
+}
+""",
+        """\treturn WriteContext{
+\t\te:             e,
+\t\troute:         route,
+\t\tttl:           ttl,
+\t\ttos:           tos,
+\t\tipv6FlowLabel: e.ipv6FlowLabel,
+\t}, nil
+}
+""",
+        "gVisor datagram WriteContext initialization",
+    )
+    write(path, text)
+
 def verify(root: pathlib.Path) -> None:
     required = {
         "adapter/outbound/wireguard.go": ["NewStackDeviceMacOSLike"],
         "vendor/github.com/metacubex/sing-wireguard/device_stack.go": [
             "func NewStackDeviceMacOSLike",
             "tcp.NewProtocolMacOSLike",
+            "udp.NewProtocolMacOSLike",
             "SetPortRange(49152, 65535)",
             "DialTCPWithBindMacOSLike",
         ],
@@ -403,6 +766,28 @@ def verify(root: pathlib.Path) -> None:
             "func makeDarwinSynOptions",
             "header.TCPOptionEOL",
             "tf.df = true",
+            "IPv6FlowLabel:         tf.ipv6FlowLabel",
+        ],
+        "vendor/github.com/metacubex/gvisor/pkg/tcpip/stack/registration.go": [
+            "IPv6FlowLabel uint32",
+        ],
+        "vendor/github.com/metacubex/gvisor/pkg/tcpip/network/ipv6/ipv6.go": [
+            "FlowLabel:         params.IPv6FlowLabel",
+        ],
+        "vendor/github.com/metacubex/gvisor/pkg/tcpip/transport/udp/protocol.go": [
+            "func NewProtocolMacOSLike",
+            "func (p *protocol) newIPv6FlowLabel",
+        ],
+        "vendor/github.com/metacubex/gvisor/pkg/tcpip/transport/udp/endpoint.go": [
+            'protocol    *protocol `state:"nosave"`',
+            "e.protocol != nil",
+        ],
+        "vendor/github.com/metacubex/gvisor/pkg/tcpip/transport/udp/forwarder.go": [
+            "newEndpoint(r.stack, r.pkt.NetworkProtocolNumber, queue)",
+        ],
+        "vendor/github.com/metacubex/gvisor/pkg/tcpip/transport/internal/network/endpoint.go": [
+            "ipv6FlowLabel uint32",
+            "IPv6FlowLabel:         c.ipv6FlowLabel",
         ],
     }
     for rel, needles in required.items():
@@ -418,6 +803,12 @@ def verify(root: pathlib.Path) -> None:
             selected.append(path.name)
     if selected != ["wireguard.go"]:
         raise RuntimeError(f"macOS-like constructor leaked outside WireGuard: {selected}")
+
+    udp_endpoint = read(root / "vendor/github.com/metacubex/gvisor/pkg/tcpip/transport/udp/endpoint.go")
+    if "func newEndpoint(s *stack.Stack, netProto tcpip.NetworkProtocolNumber" not in udp_endpoint:
+        raise RuntimeError("UDP newEndpoint signature changed; this would break udp/forwarder.go")
+    if "func newEndpoint(p *protocol" in udp_endpoint:
+        raise RuntimeError("unsafe UDP constructor signature detected")
 
     # Verify the expected byte-level active SYN option shape with all normal
     # options enabled: 2,1,3,1,1,8,4,0 and 24 bytes total.
@@ -448,8 +839,10 @@ def main() -> int:
             patch_gvisor_protocol(root)
             patch_gvisor_endpoint(root)
             patch_gvisor_connect(root)
+            patch_sing_ipv6_udp(root)
+            patch_gvisor_ipv6_flowlabel(root)
         verify(root)
-        print("macOS-like WireGuard v2 patch verification: OK")
+        print("macOS-like WireGuard v3.2 patch verification: OK")
         return 0
     except Exception as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
