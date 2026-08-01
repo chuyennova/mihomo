@@ -1,0 +1,165 @@
+name: Build Windows macOS-like Mihomo
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "**/*.go"
+      - "go.mod"
+      - "go.sum"
+      - "tools/macoslike/**"
+      - ".github/workflows/build-windows-macoslike.yml"
+
+concurrency:
+  group: macoslike-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build-windows-amd64-v2:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    env:
+      CGO_ENABLED: "0"
+      GOOS: windows
+      GOARCH: amd64
+      GOAMD64: v2
+      GOTOOLCHAIN: local
+      WINTUN_VERSION: "0.14.1"
+      WINTUN_SHA256: "07c256185d6ee3652e09fa55c0b673e2624b565e02c4b9091c79ca7d2f24ef51"
+
+    steps:
+      - name: Checkout branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      # Same MetaCubeX Go distribution used by Mihomo's upstream workflow.
+      - name: Set up Go 1.26
+        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c
+        with:
+          go-download-base-url: "https://github.com/MetaCubeX/go/releases/download/build"
+          go-version: "1.26"
+          cache: true
+
+      - name: Show toolchain and locked dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          go version
+          go env GOOS GOARCH GOAMD64 GOTOOLCHAIN
+          grep -E 'github.com/metacubex/(sing-wireguard|gvisor)' go.mod
+
+      - name: Vendor exact dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          go mod download
+          rm -rf vendor
+          go mod vendor
+          test -f vendor/github.com/metacubex/sing-wireguard/device_stack.go
+          test -f vendor/github.com/metacubex/gvisor/pkg/tcpip/stack/stack.go
+          test -f vendor/github.com/metacubex/gvisor/pkg/tcpip/transport/tcp/connect.go
+
+      - name: Apply scoped macOS-like WireGuard patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 tools/macoslike/apply_macoslike.py --root .
+          gofmt -w \
+            adapter/outbound/wireguard.go \
+            vendor/github.com/metacubex/sing-wireguard/device_stack.go \
+            vendor/github.com/metacubex/sing-wireguard/gonet.go \
+            vendor/github.com/metacubex/gvisor/pkg/tcpip/stack/stack.go \
+            vendor/github.com/metacubex/gvisor/pkg/tcpip/transport/tcp/connect.go
+          python3 tools/macoslike/apply_macoslike.py --root . --verify-only
+
+      - name: Verify patch is WireGuard-scoped
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -n 'NewStackDeviceMacOSLike' adapter/outbound/wireguard.go
+          grep -n 'NewStackDevice(' adapter/outbound/openvpn.go
+          grep -n 'NewStackDevice(' adapter/outbound/masque.go
+          ! grep -q 'NewStackDeviceMacOSLike' adapter/outbound/openvpn.go
+          ! grep -q 'NewStackDeviceMacOSLike' adapter/outbound/masque.go
+
+      - name: Build verge-mihomo.exe
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          VERSION="macoslike-v1.19.29-${GITHUB_SHA::7}"
+          BUILDTIME="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+          go build \
+            -mod=vendor \
+            -tags "with_gvisor" \
+            -trimpath \
+            -ldflags "-X 'github.com/metacubex/mihomo/constant.Version=${VERSION}' -X 'github.com/metacubex/mihomo/constant.BuildTime=${BUILDTIME}' -w -s -buildid=" \
+            -o dist/verge-mihomo.exe \
+            .
+          test -s dist/verge-mihomo.exe
+
+      - name: Add official signed wintun.dll
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --location --retry 3 \
+            "https://www.wintun.net/builds/wintun-${WINTUN_VERSION}.zip" \
+            --output /tmp/wintun.zip
+          echo "${WINTUN_SHA256}  /tmp/wintun.zip" | sha256sum --check --strict
+
+          DLL_PATH="$(unzip -Z1 /tmp/wintun.zip | grep -E '(^|/)bin/amd64/wintun\.dll$' | head -n 1)"
+          test -n "${DLL_PATH}"
+          unzip -p /tmp/wintun.zip "${DLL_PATH}" > dist/wintun.dll
+          test -s dist/wintun.dll
+
+          LICENSE_PATH="$(unzip -Z1 /tmp/wintun.zip | grep -Ei '(^|/)(prebuilt-binaries-license|license)(\.txt)?$' | head -n 1 || true)"
+          if [ -n "${LICENSE_PATH}" ]; then
+            unzip -p /tmp/wintun.zip "${LICENSE_PATH}" > dist/LICENSE-wintun.txt
+          else
+            printf '%s\n' 'Official signed Wintun binary from https://www.wintun.net/; see upstream archive for redistribution license.' > dist/LICENSE-wintun.txt
+          fi
+
+      - name: Package Clash Verge core
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp LICENSE dist/LICENSE-mihomo.txt
+          cat > dist/BUILD_INFO.txt <<EOF
+          Core: verge-mihomo.exe
+          Base: Mihomo 1.19.29
+          Target: Windows amd64 GOAMD64=v2
+          WireGuard stack: gVisor userspace, scoped macOS-like profile
+          Git commit: ${GITHUB_SHA}
+          Build run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}
+          EOF
+
+          (
+            cd dist
+            sha256sum verge-mihomo.exe wintun.dll > SHA256SUMS.txt
+            zip -9 -r ../verge-mihomo-windows-macoslike-amd64-v2.zip \
+              verge-mihomo.exe \
+              wintun.dll \
+              LICENSE-mihomo.txt \
+              LICENSE-wintun.txt \
+              BUILD_INFO.txt \
+              SHA256SUMS.txt
+          )
+          unzip -l verge-mihomo-windows-macoslike-amd64-v2.zip
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: verge-mihomo-windows-macoslike-amd64-v2-${{ github.sha }}
+          path: |
+            verge-mihomo-windows-macoslike-amd64-v2.zip
+            dist/verge-mihomo.exe
+            dist/wintun.dll
+            dist/SHA256SUMS.txt
+            dist/BUILD_INFO.txt
+          if-no-files-found: error
+          retention-days: 30
