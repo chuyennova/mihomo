@@ -1,0 +1,214 @@
+name: Build Windows Android-like Mihomo v1.0.0 IPv6
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - androidlike-v1.19.29
+    paths:
+      - "adapter/outbound/wireguard.go"
+      - "go.mod"
+      - "go.sum"
+      - "tools/androidlike/**"
+      - ".github/workflows/build-windows-androidlike.yml"
+
+concurrency:
+  group: androidlike-v1-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build-windows-amd64:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    env:
+      CGO_ENABLED: "0"
+      GOOS: windows
+      GOARCH: amd64
+      GOAMD64: v2
+      GOTOOLCHAIN: local
+      WINTUN_VERSION: "0.14.1"
+      WINTUN_SHA256: "07c256185d6ee3652e09fa55c0b673e2624b565e02c4b9091c79ca7d2f24ef51"
+
+    steps:
+      - name: Checkout branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Set up MetaCubeX Go 1.26
+        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c
+        with:
+          go-download-base-url: "https://github.com/MetaCubeX/go/releases/download/build"
+          go-version: "1.26"
+          cache: true
+
+      - name: Verify locked source
+        shell: bash
+        run: |
+          set -euo pipefail
+          go version
+          grep '^module github.com/metacubex/mihomo$' go.mod
+          grep -F 'github.com/metacubex/sing-wireguard v0.0.0-20260520151737-7e7c7c1b854c' go.mod
+          grep -F 'github.com/metacubex/gvisor v0.0.0-20251227095601-261ec1326fe8' go.mod
+          test -f tools/androidlike/apply_androidlike.py
+
+      - name: Update embedded CA bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y ca-certificates unzip zip
+          sudo update-ca-certificates
+          cp -f /etc/ssl/certs/ca-certificates.crt component/ca/ca-certificates.crt
+
+      - name: Vendor locked dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          go mod download
+          rm -rf vendor
+          go mod vendor
+          test -f vendor/github.com/metacubex/sing-wireguard/device_stack.go
+          test -f vendor/github.com/metacubex/sing-wireguard/gonet.go
+          test -f vendor/github.com/metacubex/gvisor/pkg/tcpip/stack/registration.go
+          test -f vendor/github.com/metacubex/gvisor/pkg/tcpip/network/ipv6/ipv6.go
+          test -f vendor/github.com/metacubex/gvisor/pkg/tcpip/transport/tcp/protocol.go
+          test -f vendor/github.com/metacubex/gvisor/pkg/tcpip/transport/tcp/connect.go
+          test -f vendor/github.com/metacubex/gvisor/pkg/tcpip/transport/udp/protocol.go
+          test -f vendor/github.com/metacubex/gvisor/pkg/tcpip/transport/udp/endpoint.go
+          test -f vendor/github.com/metacubex/gvisor/pkg/tcpip/transport/internal/network/endpoint.go
+
+      - name: Apply Android-like WireGuard profile
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 tools/androidlike/apply_androidlike.py --root .
+          gofmt -w \
+            adapter/outbound/wireguard.go \
+            vendor/github.com/metacubex/sing-wireguard/device_stack.go \
+            vendor/github.com/metacubex/sing-wireguard/gonet.go \
+            vendor/github.com/metacubex/gvisor/pkg/tcpip/stack/registration.go \
+            vendor/github.com/metacubex/gvisor/pkg/tcpip/network/ipv6/ipv6.go \
+            vendor/github.com/metacubex/gvisor/pkg/tcpip/transport/tcp/protocol.go \
+            vendor/github.com/metacubex/gvisor/pkg/tcpip/transport/tcp/connect.go \
+            vendor/github.com/metacubex/gvisor/pkg/tcpip/transport/udp/protocol.go \
+            vendor/github.com/metacubex/gvisor/pkg/tcpip/transport/udp/endpoint.go \
+            vendor/github.com/metacubex/gvisor/pkg/tcpip/transport/internal/network/endpoint.go
+          python3 tools/androidlike/apply_androidlike.py --root . --verify-only
+
+      - name: Verify profile scope
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -n 'mtu = 1360' adapter/outbound/wireguard.go
+          grep -n 'NewStackDeviceAndroidLike' adapter/outbound/wireguard.go
+          ! grep -q 'NewStackDeviceAndroidLike' adapter/outbound/openvpn.go
+          ! grep -q 'NewStackDeviceAndroidLike' adapter/outbound/masque.go
+          grep -n 'tcp.NewProtocolAndroidLike' vendor/github.com/metacubex/sing-wireguard/device_stack.go
+          grep -n 'udp.NewProtocolAndroidLike' vendor/github.com/metacubex/sing-wireguard/device_stack.go
+          grep -n 'DialTCPWithBindAndroidLike' vendor/github.com/metacubex/sing-wireguard/device_stack.go
+          grep -n 'IPv6FlowLabel uint32' vendor/github.com/metacubex/gvisor/pkg/tcpip/stack/registration.go
+          grep -n 'FlowLabel:.*params.IPv6FlowLabel' vendor/github.com/metacubex/gvisor/pkg/tcpip/network/ipv6/ipv6.go
+          grep -n 'func NewProtocolAndroidLike' vendor/github.com/metacubex/gvisor/pkg/tcpip/transport/tcp/protocol.go
+          grep -n 'func NewProtocolAndroidLike' vendor/github.com/metacubex/gvisor/pkg/tcpip/transport/udp/protocol.go
+          grep -n 'SetIPv6FlowLabel' vendor/github.com/metacubex/gvisor/pkg/tcpip/transport/udp/endpoint.go
+          ! grep -R -q 'makeDarwinSynOptions\|SetPortRange(49152, 65535)' \
+            adapter/outbound/wireguard.go \
+            vendor/github.com/metacubex/sing-wireguard \
+            vendor/github.com/metacubex/gvisor/pkg/tcpip/transport/tcp
+
+      - name: Compile changed packages
+        shell: bash
+        run: |
+          set -euo pipefail
+          GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go test -mod=vendor -tags "with_gvisor" \
+            github.com/metacubex/gvisor/pkg/tcpip/transport/tcp \
+            github.com/metacubex/gvisor/pkg/tcpip/transport/udp \
+            github.com/metacubex/sing-wireguard
+
+      - name: Build verge-mihomo.exe
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          VERSION="androidlike-v1.0.0-v1.19.29-${GITHUB_SHA::7}"
+          BUILDTIME="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+          go build \
+            -mod=vendor \
+            -tags "with_gvisor" \
+            -trimpath \
+            -ldflags "-X 'github.com/metacubex/mihomo/constant.Version=${VERSION}' -X 'github.com/metacubex/mihomo/constant.BuildTime=${BUILDTIME}' -w -s -buildid=" \
+            -o dist/verge-mihomo.exe \
+            .
+          test -s dist/verge-mihomo.exe
+
+      - name: Add official wintun.dll
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --location --retry 3 \
+            "https://www.wintun.net/builds/wintun-${WINTUN_VERSION}.zip" \
+            --output /tmp/wintun.zip
+          echo "${WINTUN_SHA256}  /tmp/wintun.zip" | sha256sum --check --strict
+          DLL_PATH="$(unzip -Z1 /tmp/wintun.zip | grep -E '(^|/)bin/amd64/wintun\.dll$' | head -n 1)"
+          test -n "${DLL_PATH}"
+          unzip -p /tmp/wintun.zip "${DLL_PATH}" > dist/wintun.dll
+          test -s dist/wintun.dll
+
+          LICENSE_PATH="$(unzip -Z1 /tmp/wintun.zip | grep -Ei '(^|/)(prebuilt-binaries-license|license)(\.txt)?$' | head -n 1 || true)"
+          if [ -n "${LICENSE_PATH}" ]; then
+            unzip -p /tmp/wintun.zip "${LICENSE_PATH}" > dist/LICENSE-wintun.txt
+          else
+            printf '%s\n' 'Official signed Wintun binary; see the upstream Wintun archive for its redistribution license.' > dist/LICENSE-wintun.txt
+          fi
+
+      - name: Package Clash Verge core
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp LICENSE dist/LICENSE-mihomo.txt
+          cat > dist/BUILD_INFO.txt <<EOF
+          Core: verge-mihomo.exe
+          Base: Mihomo v1.19.29
+          Target: Windows amd64 GOAMD64=v2
+          Scope: WireGuard outbound only; one independent gVisor stack per outbound
+          Profile: Android/Linux mobile representative
+          YAML: no network-profile field required in this standalone build
+          Default WireGuard MTU: 1360 when YAML omits mtu; explicit YAML mtu wins
+          IPv4 at MTU 1360: TTL=64, MSS=1320, window=26368, WS=7
+          TCP SYN options: MSS,SACK,Timestamp,NOP,WindowScale
+          Expected JA4T at MTU 1360: 26368_2-4-8-1-3_1320_7
+          IPv6 at MTU 1360: HopLimit=64, MSS=1300, window=25984, WS=7
+          IPv6 Flow Label: deterministic 20-bit value per 5-tuple and per WireGuard stack
+          Forced TCP keepalive 15s: disabled for Android-like WireGuard sockets
+          Git commit: ${GITHUB_SHA}
+          EOF
+          (
+            cd dist
+            sha256sum verge-mihomo.exe wintun.dll > SHA256SUMS.txt
+            zip -9 -r ../verge-mihomo-windows-androidlike-v1.0.0-ipv6-amd64.zip \
+              verge-mihomo.exe \
+              wintun.dll \
+              LICENSE-mihomo.txt \
+              LICENSE-wintun.txt \
+              BUILD_INFO.txt \
+              SHA256SUMS.txt
+          )
+          unzip -l verge-mihomo-windows-androidlike-v1.0.0-ipv6-amd64.zip
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: verge-mihomo-windows-androidlike-v1.0.0-ipv6-amd64-${{ github.sha }}
+          path: |
+            verge-mihomo-windows-androidlike-v1.0.0-ipv6-amd64.zip
+            dist/verge-mihomo.exe
+            dist/wintun.dll
+            dist/BUILD_INFO.txt
+            dist/SHA256SUMS.txt
+          if-no-files-found: error
+          retention-days: 30
