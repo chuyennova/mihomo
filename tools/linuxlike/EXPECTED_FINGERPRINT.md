@@ -1,4 +1,4 @@
-# Expected Linux-like network profile v3
+# Expected Linux-like network profile v4
 
 - Scope: chỉ WireGuard outbound.
 - TCP options: giữ thứ tự Linux gốc của gVisor.
@@ -10,6 +10,6 @@
 - IPv4 TCP: DF bật từ SYN; IP ID riêng theo socket và tăng theo segment.
 - IPv4 UDP connected: PMTU/DF; IP ID riêng theo socket.
 - IPv4 UDP unconnected: khi DF bật dùng atomic IP ID `0`; không giả bộ đếm socket.
-- IPv4 packet có DF và vượt MTU: trả `message too long`, không phân mảnh cục bộ.
+- IPv4 packet có DF và IPv6 packet dưới PMTU discovery nếu vượt MTU: trả `message too long`, không source-fragment.
 - IPv6 TCP/UDP: cùng một hash namespace theo từng stack; tuple gồm địa chỉ, port và protocol; xoay trái 16 bit; Flow Label trong dải `0x80000–0xFFFFF`.
 - MTU: giữ cấu hình Mihomo; mặc định `1408`.

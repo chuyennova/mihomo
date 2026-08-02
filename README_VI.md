@@ -1,4 +1,4 @@
-# Mihomo v1.19.29 — Windows Linux-like WireGuard v3
+# Mihomo v1.19.29 — Windows Linux-like WireGuard v4
 
 Bản build riêng chạy trên Windows/Clash Verge; mọi WireGuard outbound tự dùng stack Linux-like. **Không có và không cần `network-profile: linux` trong YAML.**
 
@@ -9,13 +9,13 @@ Bản build riêng chạy trên Windows/Clash Verge; mọi WireGuard outbound t�
 3. Commit và chạy workflow:
 
 ```text
-Build Windows Linux-like Mihomo v3
+Build Windows Linux-like Mihomo v4
 ```
 
 Artifact:
 
 ```text
-verge-mihomo-windows-linuxlike-v3-amd64.zip
+verge-mihomo-windows-linuxlike-v4-amd64.zip
 ├── verge-mihomo.exe
 ├── wintun.dll
 ├── BUILD_INFO.txt
@@ -36,8 +36,8 @@ Chỉ `adapter/outbound/wireguard.go` gọi constructor Linux-like. OpenVPN, MAS
 - Không cưỡng bức TCP keepalive `15/15`.
 - TCP/IPv4 bật PMTU/DF từ SYN và dùng IP ID tăng riêng theo socket.
 - UDP/IPv4 bật PMTU/DF; chỉ socket UDP đã `connect()` dùng IP ID tăng riêng. UDP `sendto()` chưa kết nối giữ atomic ID bằng `0` khi DF bật.
-- Gói IPv4 cục bộ có DF nhưng vượt MTU trả `message too long`, không bị gVisor tự phân mảnh.
-- TCP/UDP IPv6 dùng chung một flow hash có salt theo từng WireGuard stack, xoay trái 16 bit và đưa vào dải Flow Label stateless.
+- Gói IPv4 có DF và gói IPv6 dùng PMTU mà vượt MTU đều trả `message too long`, không bị source-fragment ngoài ý muốn.
+- TCP/UDP IPv6 dùng chung flow hash có salt theo từng WireGuard stack, xoay trái 16 bit, đưa vào dải Flow Label stateless và giữ PMTU mặc định kiểu Linux.
 - MTU vẫn lấy từ YAML; mặc định Mihomo `1408` không bị ép đổi.
 
 Workflow khóa đúng dependency của Mihomo 1.19.29, patch theo anchor nghiêm ngặt, chạy `gofmt`, verify, compile-check rồi mới build Windows.
