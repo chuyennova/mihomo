@@ -1,11 +1,41 @@
-# Kiểm thử sau build
+# Kiểm tra sau khi build
 
-1. Thay `verge-mihomo.exe` và `wintun.dll` trong Clash Verge.
-2. Chạy ít nhất hai WireGuard/SOCKS đồng thời để kiểm tra cô lập.
-3. Thu PCAP tại máy chủ kiểm thử hoặc endpoint do bạn kiểm soát.
-4. Với MTU 1360, kiểm tra IPv4 JA4T `26368_2-4-8-1-3_1320_7`.
-5. Kiểm tra IPv6 Flow Label: không đổi trong một flow, khác giữa các flow thông thường.
-6. Kiểm tra TCP kết nối lâu không tự phát keepalive theo chu kỳ 15 giây.
-7. Kiểm tra IPv4-only, IPv6-only và dual-stack riêng biệt.
+## IPv4
 
-TTL quan sát ở đích có thể thấp hơn 64 do số hop thực tế.
+Mở BrowserLeaks TCP qua đúng SOCKS/WireGuard. Với MTU 1360, mục tiêu:
+
+```text
+JA4T 26368_2-4-8-1-3_1320_7
+TTL 64
+MSS 1320
+Window 26368
+WS 7
+Options MSS,SACK,Timestamp,NOP,WindowScale
+```
+
+## IPv6
+
+BrowserLeaks TCP hiện không đủ để xác nhận IPv6. Bắt gói sau giải mã tại server WireGuard:
+
+```bash
+sudo tcpdump -ni wg0 -vv 'ip6 and (tcp or udp or icmp6)'
+```
+
+Wireshark filter cho SYN IPv6:
+
+```text
+ipv6 && tcp.flags.syn == 1 && tcp.flags.ack == 0
+```
+
+Mục tiêu ở interface WireGuard trước khi forward:
+
+```text
+Hop Limit 64
+Traffic Class 0
+TCP MSS 1300
+TCP Window 25984
+WS 7
+Flow Label 0x80000–0xFFFFF
+Cùng một flow: Flow Label không đổi
+Flow mới: thường có Flow Label khác
+```

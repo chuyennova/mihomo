@@ -1,14 +1,25 @@
 #!/usr/bin/env python3
-"""Apply the Mihomo v1.19.29 WireGuard-only Android-like network profile.
+"""Apply the Mihomo v1.19.29 standalone Android-like WireGuard overlay.
 
-Run after `go mod vendor` from the Mihomo repository root.
-The standalone core selects this profile for WireGuard outbounds only; no YAML
-field is added. Other gVisor users keep upstream behavior.
+Run from the Mihomo repository root after `go mod vendor`.
+Only WireGuard outbounds select the Android-like userspace stack. Other gVisor
+users remain unchanged. This standalone build does not add a YAML field.
 """
 from __future__ import annotations
 
 import argparse
+import hashlib
 import pathlib
+
+SOURCE_HASHES = {
+    "adapter/outbound/wireguard.go": "fc3d6082ffc067c0bad762b6670b6372626aa59767c98c4e92ed3a9d1a2290d8",
+    "vendor/github.com/metacubex/sing-wireguard/device_stack.go": "c56e9fc817f88a4649340c1e76b619ba3bf98aaf2b2b9517b3b78e75381dac4e",
+    "vendor/github.com/metacubex/sing-wireguard/gonet.go": "ce2d97aacc48768ce853356dcc51a06f0dd993c9918fa4ef7df2febb294f17e0",
+    "vendor/github.com/metacubex/gvisor/pkg/tcpip/stack/registration.go": "f750f90953f7db1acd52b4a81a55460f354260bd06e9535fc7777ac53130b921",
+    "vendor/github.com/metacubex/gvisor/pkg/tcpip/network/ipv6/ipv6.go": "daa09ef779d2a15dca690b2a1d46ec1d5eb1bff15d9e4c59062daac6f84c8e8e",
+}
+
+TEST_FILE = "vendor/github.com/metacubex/gvisor/pkg/tcpip/network/ipv6/android_flowlabel_test.go"
 
 
 def read(path: pathlib.Path) -> str:
@@ -18,7 +29,12 @@ def read(path: pathlib.Path) -> str:
 
 
 def write(path: pathlib.Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text, encoding="utf-8", newline="\n")
+
+
+def sha256(path: pathlib.Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
 def replace_once(text: str, old: str, new: str, label: str) -> str:
@@ -26,6 +42,20 @@ def replace_once(text: str, old: str, new: str, label: str) -> str:
     if count != 1:
         raise RuntimeError(f"{label}: expected exactly one match, found {count}")
     return text.replace(old, new, 1)
+
+
+def validate_pristine(root: pathlib.Path) -> None:
+    for relative, expected in SOURCE_HASHES.items():
+        path = root / relative
+        if not path.is_file():
+            raise FileNotFoundError(f"missing locked source: {path}")
+        actual = sha256(path)
+        if actual != expected:
+            raise RuntimeError(
+                f"source lock mismatch: {relative}\n"
+                f"expected: {expected}\nactual:   {actual}\n"
+                "Use the exact Mihomo v1.19.29 dependencies locked in go.mod."
+            )
 
 
 def patch_mihomo(root: pathlib.Path) -> None:
@@ -40,7 +70,7 @@ def patch_mihomo(root: pathlib.Path) -> None:
 """,
         """\tmtu := option.MTU
 \tif mtu == 0 {
-\t\t// Representative Android/mobile WireGuard MTU. Explicit YAML always wins.
+\t\t// Representative Android/mobile WireGuard MTU. Explicit YAML wins.
 \t\tmtu = 1360
 \t}
 """,
@@ -81,25 +111,31 @@ func NewStackDevice(localAddresses []netip.Prefix, mtu uint32) (*StackDevice, er
 }
 
 // NewStackDeviceAndroidLike creates one independent Android/Linux-oriented
-// userspace stack for one WireGuard outbound. It does not create a Windows NIC.
+// userspace network stack for one WireGuard outbound. It creates no Windows NIC.
 func NewStackDeviceAndroidLike(localAddresses []netip.Prefix, mtu uint32) (*StackDevice, error) {
 \treturn newStackDevice(localAddresses, mtu, true)
 }
 
 func newStackDevice(localAddresses []netip.Prefix, mtu uint32, androidLike bool) (*StackDevice, error) {
-\tvar tcpProtocol stack.TransportProtocolFactory = tcp.NewProtocol
-\tvar udpProtocol stack.TransportProtocolFactory = udp.NewProtocol
+\tvar ipv6Protocol stack.NetworkProtocolFactory = ipv6.NewProtocol
 \tif androidLike {
-\t\ttcpProtocol = tcp.NewProtocolAndroidLike
-\t\tudpProtocol = udp.NewProtocolAndroidLike
+\t\tipv6Protocol = ipv6.NewProtocolAndroidLike
 \t}
 \tipStack := stack.New(stack.Options{
-\t\tNetworkProtocols:   []stack.NetworkProtocolFactory{ipv4.NewProtocol, ipv6.NewProtocol},
-\t\tTransportProtocols: []stack.TransportProtocolFactory{tcpProtocol, udpProtocol, icmp.NewProtocol4, icmp.NewProtocol6},
+\t\tNetworkProtocols:   []stack.NetworkProtocolFactory{ipv4.NewProtocol, ipv6Protocol},
+\t\tTransportProtocols: []stack.TransportProtocolFactory{tcp.NewProtocol, udp.NewProtocol, icmp.NewProtocol4, icmp.NewProtocol6},
 \t\tHandleLocal:        true,
 \t})
+\tif androidLike {
+\t\t// Linux/Android default local ephemeral range. PortManager is per stack,
+\t\t// so concurrent WireGuard outbounds remain isolated.
+\t\tif err := ipStack.SetPortRange(32768, 60999); err != nil {
+\t\t\tipStack.Close()
+\t\t\treturn nil, E.New("set Android-like ephemeral port range: ", err.String())
+\t\t}
+\t}
 """,
-        "sing-wireguard Android-like constructors",
+        "sing-wireguard Android-like constructor",
     )
     text = replace_once(
         text,
@@ -112,7 +148,7 @@ func newStackDevice(localAddresses []netip.Prefix, mtu uint32, androidLike bool)
 \t\tandroidLike: androidLike,
 \t}
 """,
-        "sing-wireguard Android-like initialization",
+        "sing-wireguard Android-like state",
     )
     text = replace_once(
         text,
@@ -144,7 +180,7 @@ def patch_sing_gonet(root: pathlib.Path) -> None:
 }
 
 // DialTCPWithBindAndroidLike leaves SO_KEEPALIVE disabled unless the calling
-// application explicitly requests it, instead of forcing one 15-second pattern.
+// application explicitly enables it, instead of forcing one 15-second pattern.
 func DialTCPWithBindAndroidLike(ctx context.Context, s *stack.Stack, localAddr, remoteAddr tcpip.FullAddress, network tcpip.NetworkProtocolNumber) (*gonet.TCPConn, error) {
 \treturn dialTCPWithBind(ctx, s, localAddr, remoteAddr, network, false)
 }
@@ -205,6 +241,101 @@ def patch_ipv6(root: pathlib.Path) -> None:
     text = read(path)
     text = replace_once(
         text,
+        """import (
+\t"fmt"
+\t"math"
+\t"reflect"
+""",
+        """import (
+\t"encoding/binary"
+\t"fmt"
+\t"math"
+\t"math/bits"
+\t"reflect"
+""",
+        "gVisor IPv6 Android-like imports",
+    )
+    text = replace_once(
+        text,
+        """\t// DefaultTTL is the default hop limit for IPv6 Packets egressed by
+\t// Netstack.
+\tDefaultTTL = 64
+
+\t// buckets for fragment identifiers
+""",
+        """\t// DefaultTTL is the default hop limit for IPv6 Packets egressed by
+\t// Netstack.
+\tDefaultTTL = 64
+
+\tipv6FlowLabelMask          = 0x000fffff
+\tipv6FlowLabelStatelessFlag = 0x00080000
+
+\t// buckets for fragment identifiers
+""",
+        "gVisor IPv6 flow-label mask",
+    )
+    helper_anchor = """const (
+\tforwardingDisabled = 0
+\tforwardingEnabled  = 1
+)
+"""
+    helper_code = """const (
+\tforwardingDisabled = 0
+\tforwardingEnabled  = 1
+)
+
+func sipRound(v0, v1, v2, v3 *uint64) {
+\t*v0 += *v1
+\t*v1 = bits.RotateLeft64(*v1, 13)
+\t*v1 ^= *v0
+\t*v0 = bits.RotateLeft64(*v0, 32)
+\t*v2 += *v3
+\t*v3 = bits.RotateLeft64(*v3, 16)
+\t*v3 ^= *v2
+\t*v0 += *v3
+\t*v3 = bits.RotateLeft64(*v3, 21)
+\t*v3 ^= *v0
+\t*v2 += *v1
+\t*v1 = bits.RotateLeft64(*v1, 17)
+\t*v1 ^= *v2
+\t*v2 = bits.RotateLeft64(*v2, 32)
+}
+
+// sipHash24 implements SipHash-2-4. Linux uses a per-network-namespace SipHash
+// secret for automatic IPv6 flow labels so labels remain stable per flow while
+// not exposing a weak boot-time hash secret on the wire.
+func sipHash24(k0, k1 uint64, data []byte) uint64 {
+\tv0 := k0 ^ 0x736f6d6570736575
+\tv1 := k1 ^ 0x646f72616e646f6d
+\tv2 := k0 ^ 0x6c7967656e657261
+\tv3 := k1 ^ 0x7465646279746573
+\toriginalLength := len(data)
+\tfor len(data) >= 8 {
+\t\tm := binary.LittleEndian.Uint64(data[:8])
+\t\tv3 ^= m
+\t\tsipRound(&v0, &v1, &v2, &v3)
+\t\tsipRound(&v0, &v1, &v2, &v3)
+\t\tv0 ^= m
+\t\tdata = data[8:]
+\t}
+\tb := uint64(originalLength) << 56
+\tfor i, value := range data {
+\t\tb |= uint64(value) << (8 * i)
+\t}
+\tv3 ^= b
+\tsipRound(&v0, &v1, &v2, &v3)
+\tsipRound(&v0, &v1, &v2, &v3)
+\tv0 ^= b
+\tv2 ^= 0xff
+\tfor i := 0; i < 4; i++ {
+\t\tsipRound(&v0, &v1, &v2, &v3)
+\t}
+\treturn v0 ^ v1 ^ v2 ^ v3
+}
+"""
+    text = replace_once(text, helper_anchor, helper_code, "gVisor SipHash helper")
+    text = replace_once(
+        text,
         """\t\tTransportProtocol: params.Protocol,
 \t\tHopLimit:          params.TTL,
 \t\tTrafficClass:      params.TOS,
@@ -213,397 +344,203 @@ def patch_ipv6(root: pathlib.Path) -> None:
         """\t\tTransportProtocol: params.Protocol,
 \t\tHopLimit:          params.TTL,
 \t\tTrafficClass:      params.TOS,
-\t\tFlowLabel:         params.IPv6FlowLabel & 0x000fffff,
+\t\tFlowLabel:         params.IPv6FlowLabel & ipv6FlowLabelMask,
 \t\tSrcAddr:           srcAddr,
 """,
         "gVisor IPv6 header flow label",
     )
-    write(path, text)
-
-
-def patch_tcp_protocol(root: pathlib.Path) -> None:
-    path = root / "vendor/github.com/metacubex/gvisor/pkg/tcpip/transport/tcp/protocol.go"
-    text = read(path)
     text = replace_once(
         text,
-        """type protocol struct {
-\tstack *stack.Stack
-
-\tmu""",
-        """type protocol struct {
-\tstack       *stack.Stack
-\tandroidLike bool `state:\"nosave\"`
-
-\tmu""",
-        "gVisor TCP Android-like field",
-    )
-    text = replace_once(
-        text,
-        """\tseqnumSecret   [16]byte
-\ttsOffsetSecret [16]byte
-}""",
-        """\tseqnumSecret    [16]byte
-\ttsOffsetSecret  [16]byte
-\tflowLabelSecret [16]byte
-}""",
-        "gVisor TCP flow-label secret field",
-    )
-    text = replace_once(
-        text,
-        """func NewProtocol(s *stack.Stack) stack.TransportProtocol {
-\treturn newProtocol(s, ccReno, nil)
-}
+        """func (e *endpoint) WritePacket(r *stack.Route, params stack.NetworkHeaderParams, pkt *stack.PacketBuffer) tcpip.Error {
+\tdstAddr := r.RemoteAddress()
+\tif err := addIPHeader(r.LocalAddress(), dstAddr, pkt, params, nil /* extensionHeaders */); err != nil {
 """,
-        """func NewProtocol(s *stack.Stack) stack.TransportProtocol {
-\treturn newProtocol(s, ccReno, nil, false)
-}
-
-// NewProtocolAndroidLike keeps the Linux-oriented TCP wire behavior and adds
-// per-flow IPv6 labels only for the independent WireGuard stack selecting it.
-func NewProtocolAndroidLike(s *stack.Stack) stack.TransportProtocol {
-\treturn newProtocol(s, ccReno, nil, true)
-}
-""",
-        "gVisor TCP NewProtocolAndroidLike",
-    )
-    text = replace_once(
-        text,
-        """\treturn func(s *stack.Stack) stack.TransportProtocol {
-\t\treturn newProtocol(s, ccReno, probe)
+        """func (e *endpoint) WritePacket(r *stack.Route, params stack.NetworkHeaderParams, pkt *stack.PacketBuffer) tcpip.Error {
+\tdstAddr := r.RemoteAddress()
+\tif e.protocol.androidLike && params.IPv6FlowLabel == 0 {
+\t\tparams.IPv6FlowLabel = e.protocol.autoFlowLabel(
+\t\t\tr.LocalAddress(),
+\t\t\tdstAddr,
+\t\t\tparams.Protocol,
+\t\t\tpkt.TransportHeader().Slice(),
+\t\t)
 \t}
+\tif err := addIPHeader(r.LocalAddress(), dstAddr, pkt, params, nil /* extensionHeaders */); err != nil {
 """,
-        """\treturn func(s *stack.Stack) stack.TransportProtocol {
-\t\treturn newProtocol(s, ccReno, probe, false)
-\t}
-""",
-        "gVisor TCP NewProtocolProbe",
-    )
-    text = replace_once(
-        text,
-        """func NewProtocolCUBIC(s *stack.Stack) stack.TransportProtocol {
-\treturn newProtocol(s, ccCubic, nil)
-}
-
-func newProtocol(s *stack.Stack, cc string, probe TCPProbeFunc) stack.TransportProtocol {
-""",
-        """func NewProtocolCUBIC(s *stack.Stack) stack.TransportProtocol {
-\treturn newProtocol(s, ccCubic, nil, false)
-}
-
-func newProtocol(s *stack.Stack, cc string, probe TCPProbeFunc, androidLike bool) stack.TransportProtocol {
-""",
-        "gVisor TCP newProtocol signature",
-    )
-    text = replace_once(
-        text,
-        """\tvar seqnumSecret [16]byte
-\tvar tsOffsetSecret [16]byte
-""",
-        """\tvar seqnumSecret [16]byte
-\tvar tsOffsetSecret [16]byte
-\tvar flowLabelSecret [16]byte
-""",
-        "gVisor TCP flow-label secret declaration",
-    )
-    text = replace_once(
-        text,
-        """\tif n, err := rng.Reader.Read(tsOffsetSecret[:]); err != nil || n != len(tsOffsetSecret) {
-\t\tpanic(fmt.Sprintf(\"Read() failed: %v\", err))
-\t}
-\tp := protocol{
-\t\tstack: s,
-""",
-        """\tif n, err := rng.Reader.Read(tsOffsetSecret[:]); err != nil || n != len(tsOffsetSecret) {
-\t\tpanic(fmt.Sprintf(\"Read() failed: %v\", err))
-\t}
-\tif n, err := rng.Reader.Read(flowLabelSecret[:]); err != nil || n != len(flowLabelSecret) {
-\t\tpanic(fmt.Sprintf(\"Read() failed: %v\", err))
-\t}
-\tp := protocol{
-\t\tstack:       s,
-\t\tandroidLike: androidLike,
-""",
-        "gVisor TCP protocol initialization",
-    )
-    text = replace_once(
-        text,
-        """\t\tseqnumSecret:               seqnumSecret,
-\t\ttsOffsetSecret:             tsOffsetSecret,
-\t\tprobe:                      probe,
-""",
-        """\t\tseqnumSecret:               seqnumSecret,
-\t\ttsOffsetSecret:             tsOffsetSecret,
-\t\tflowLabelSecret:            flowLabelSecret,
-\t\tprobe:                      probe,
-""",
-        "gVisor TCP flow-label secret initialization",
-    )
-    text = replace_once(
-        text,
-        """func (p *protocol) tsOffset(src, dst tcpip.Address) tcp.TSOffset {
-""",
-        """func (p *protocol) ipv6FlowLabel(id stack.TransportEndpointID) uint32 {
-\th := sha256.New()
-\t_, _ = h.Write(p.flowLabelSecret[:])
-\t_, _ = h.Write(id.LocalAddress.AsSlice())
-\t_, _ = h.Write(id.RemoteAddress.AsSlice())
-\tvar ports [4]byte
-\tbinary.LittleEndian.PutUint16(ports[0:2], id.LocalPort)
-\tbinary.LittleEndian.PutUint16(ports[2:4], id.RemotePort)
-\t_, _ = h.Write(ports[:])
-\t_, _ = h.Write([]byte{byte(ProtocolNumber)})
-\tlabel := binary.LittleEndian.Uint32(h.Sum(nil)[:4]) & 0x000fffff
-\tif label == 0 {
-\t\treturn 1
-\t}
-\treturn label
-}
-
-func (p *protocol) tsOffset(src, dst tcpip.Address) tcp.TSOffset {
-""",
-        "gVisor TCP IPv6 flow-label hash",
-    )
-    write(path, text)
-
-
-def patch_tcp_connect(root: pathlib.Path) -> None:
-    path = root / "vendor/github.com/metacubex/gvisor/pkg/tcpip/transport/tcp/connect.go"
-    text = read(path)
-    text = replace_once(
-        text,
-        """type tcpFields struct {
-\tid        stack.TransportEndpointID
-\tttl       uint8
-\ttos       uint8
-\tflags     header.TCPFlags
-""",
-        """type tcpFields struct {
-\tid            stack.TransportEndpointID
-\tttl           uint8
-\ttos           uint8
-\tipv6FlowLabel uint32
-\tflags         header.TCPFlags
-""",
-        "gVisor TCP fields IPv6 flow label",
-    )
-    text = replace_once(
-        text,
-        """func (e *Endpoint) sendTCP(r *stack.Route, tf tcpFields, pkt *stack.PacketBuffer, gso stack.GSO) tcpip.Error {
-\ttf.txHash = e.txHash
-""",
-        """func (e *Endpoint) sendTCP(r *stack.Route, tf tcpFields, pkt *stack.PacketBuffer, gso stack.GSO) tcpip.Error {
-\ttf.txHash = e.txHash
-\tif e.protocol.androidLike && r.NetProto() == header.IPv6ProtocolNumber {
-\t\ttf.ipv6FlowLabel = e.protocol.ipv6FlowLabel(tf.id)
-\t}
-""",
-        "gVisor TCP per-flow IPv6 label",
-    )
-    text = replace_once(
-        text,
-        """\t\t\tProtocol:              ProtocolNumber,
-\t\t\tTTL:                   tf.ttl,
-\t\t\tTOS:                   tf.tos,
-\t\t\tDF:                    tf.df,
-""",
-        """\t\t\tProtocol:              ProtocolNumber,
-\t\t\tTTL:                   tf.ttl,
-\t\t\tTOS:                   tf.tos,
-\t\t\tIPv6FlowLabel:         tf.ipv6FlowLabel,
-\t\t\tDF:                    tf.df,
-""",
-        "gVisor TCP batch IPv6 label",
-    )
-    text = replace_once(
-        text,
-        """\t\tProtocol:              ProtocolNumber,
-\t\tTTL:                   tf.ttl,
-\t\tTOS:                   tf.tos,
-\t\tDF:                    tf.df,
-""",
-        """\t\tProtocol:              ProtocolNumber,
-\t\tTTL:                   tf.ttl,
-\t\tTOS:                   tf.tos,
-\t\tIPv6FlowLabel:         tf.ipv6FlowLabel,
-\t\tDF:                    tf.df,
-""",
-        "gVisor TCP IPv6 label",
-    )
-    write(path, text)
-
-
-def patch_udp_protocol(root: pathlib.Path) -> None:
-    path = root / "vendor/github.com/metacubex/gvisor/pkg/tcpip/transport/udp/protocol.go"
-    text = read(path)
-    text = replace_once(
-        text,
-        """import (
-\t\"github.com/metacubex/gvisor/pkg/tcpip\"
-""",
-        """import (
-\t\"crypto/sha256\"
-\t\"encoding/binary\"
-\t\"fmt\"
-
-\t\"github.com/metacubex/gvisor/pkg/tcpip\"
-""",
-        "gVisor UDP hash imports",
+        "gVisor IPv6 automatic flow label",
     )
     text = replace_once(
         text,
         """type protocol struct {
-\tstack *stack.Stack
-}
+\tstack   *stack.Stack
+\toptions Options
+
+\tmu protocolMu
 """,
         """type protocol struct {
-\tstack           *stack.Stack
-\tandroidLike     bool `state:\"nosave\"`
-\tflowLabelSecret [16]byte
+\tstack          *stack.Stack
+\toptions        Options
+\tandroidLike    bool     `state:\"nosave\"`
+\tflowLabelKey   [2]uint64 `state:\"nosave\"`
+
+\tmu protocolMu
+""",
+        "gVisor IPv6 protocol Android-like state",
+    )
+    method_anchor = """// Number returns the ipv6 protocol number.
+func (p *protocol) Number() tcpip.NetworkProtocolNumber {
+"""
+    method_code = """// autoFlowLabel follows Linux's automatic-label shape: a keyed hash of the
+// flow identity, a 16-bit rotate, and the low 20 bits. Android/Linux defaults
+// reserve the upper half of the label space for stateless automatic labels.
+// TCP/UDP use the 5-tuple; ICMPv6 also includes type, code and identifier.
+func (p *protocol) autoFlowLabel(src, dst tcpip.Address, proto tcpip.TransportProtocolNumber, transportHeader []byte) uint32 {
+\tvar flow [56]byte
+\tn := copy(flow[:], src.AsSlice())
+\tn += copy(flow[n:], dst.AsSlice())
+\tflow[n] = byte(proto)
+\tn++
+\tswitch proto {
+\tcase header.TCPProtocolNumber, header.UDPProtocolNumber:
+\t\tif len(transportHeader) >= 4 {
+\t\t\tn += copy(flow[n:], transportHeader[:4])
+\t\t}
+\tcase header.ICMPv6ProtocolNumber:
+\t\tif len(transportHeader) >= 2 {
+\t\t\tn += copy(flow[n:], transportHeader[:2])
+\t\t}
+\t\tif len(transportHeader) >= 6 {
+\t\t\tn += copy(flow[n:], transportHeader[4:6])
+\t\t}
+\t}
+\thash := uint32(sipHash24(p.flowLabelKey[0], p.flowLabelKey[1], flow[:n]))
+\treturn (bits.RotateLeft32(hash, 16) & ipv6FlowLabelMask) | ipv6FlowLabelStatelessFlag
 }
 
-func (p *protocol) ipv6FlowLabel(local, remote tcpip.Address, localPort, remotePort uint16) uint32 {
-\th := sha256.New()
-\t_, _ = h.Write(p.flowLabelSecret[:])
-\t_, _ = h.Write(local.AsSlice())
-\t_, _ = h.Write(remote.AsSlice())
-\tvar ports [4]byte
-\tbinary.LittleEndian.PutUint16(ports[0:2], localPort)
-\tbinary.LittleEndian.PutUint16(ports[2:4], remotePort)
-\t_, _ = h.Write(ports[:])
-\t_, _ = h.Write([]byte{byte(ProtocolNumber)})
-\tlabel := binary.LittleEndian.Uint32(h.Sum(nil)[:4]) & 0x000fffff
-\tif label == 0 {
-\t\treturn 1
-\t}
-\treturn label
-}
-""",
-        "gVisor UDP Android-like protocol fields",
-    )
+// Number returns the ipv6 protocol number.
+func (p *protocol) Number() tcpip.NetworkProtocolNumber {
+"""
+    text = replace_once(text, method_anchor, method_code, "gVisor IPv6 autoFlowLabel method")
     text = replace_once(
         text,
-        """func (p *protocol) NewEndpoint(netProto tcpip.NetworkProtocolNumber, waiterQueue *waiter.Queue) (tcpip.Endpoint, tcpip.Error) {
-\treturn newEndpoint(p.stack, netProto, waiterQueue), nil
-}
+        """func NewProtocolWithOptions(opts Options) stack.NetworkProtocolFactory {
+\topts.NDPConfigs.validate()
+
+\treturn func(s *stack.Stack) stack.NetworkProtocol {
+\t\tp := &protocol{
+\t\t\tstack:   s,
+\t\t\toptions: opts,
+\t\t}
 """,
-        """func (p *protocol) NewEndpoint(netProto tcpip.NetworkProtocolNumber, waiterQueue *waiter.Queue) (tcpip.Endpoint, tcpip.Error) {
-\tep := newEndpoint(p.stack, netProto, waiterQueue)
-\tep.protocol = p
-\treturn ep, nil
-}
-""",
-        "gVisor UDP protocol endpoint link",
-    )
-    text = replace_once(
-        text,
-        """func NewProtocol(s *stack.Stack) stack.TransportProtocol {
-\treturn &protocol{stack: s}
-}
-""",
-        """func NewProtocol(s *stack.Stack) stack.TransportProtocol {
-\treturn &protocol{stack: s}
+        """func NewProtocolWithOptions(opts Options) stack.NetworkProtocolFactory {
+\treturn newProtocolWithOptions(opts, false)
 }
 
-// NewProtocolAndroidLike adds deterministic per-flow IPv6 labels while
-// preserving the normal Linux-oriented UDP behavior.
-func NewProtocolAndroidLike(s *stack.Stack) stack.TransportProtocol {
-\trng := s.SecureRNG()
-\tvar secret [16]byte
-\tif n, err := rng.Reader.Read(secret[:]); err != nil || n != len(secret) {
-\t\tpanic(fmt.Sprintf(\"Read() failed: %v\", err))
-\t}
-\treturn &protocol{stack: s, androidLike: true, flowLabelSecret: secret}
+// NewProtocolAndroidLike preserves normal Linux-oriented IPv6 behavior and
+// enables Linux/Android-style automatic flow labels only for the selecting
+// WireGuard stack.
+func NewProtocolAndroidLike(s *stack.Stack) stack.NetworkProtocol {
+\treturn newProtocolWithOptions(Options{}, true)(s)
 }
+
+func newProtocolWithOptions(opts Options, androidLike bool) stack.NetworkProtocolFactory {
+\topts.NDPConfigs.validate()
+
+\treturn func(s *stack.Stack) stack.NetworkProtocol {
+\t\tp := &protocol{
+\t\t\tstack:       s,
+\t\t\toptions:     opts,
+\t\t\tandroidLike: androidLike,
+\t\t}
+\t\tif androidLike {
+\t\t\trng := s.SecureRNG()
+\t\t\tp.flowLabelKey[0] = rng.Uint64()
+\t\t\tp.flowLabelKey[1] = rng.Uint64()
+\t\t}
 """,
-        "gVisor UDP NewProtocolAndroidLike",
+        "gVisor IPv6 Android-like constructor",
     )
     write(path, text)
 
 
-def patch_udp_endpoint(root: pathlib.Path) -> None:
-    path = root / "vendor/github.com/metacubex/gvisor/pkg/tcpip/transport/udp/endpoint.go"
-    text = read(path)
-    text = replace_once(
-        text,
-        """\tstack       *stack.Stack
-\twaiterQueue *waiter.Queue
-\tnet         network.Endpoint
-\tstats       tcpip.TransportEndpointStats
-""",
-        """\tstack       *stack.Stack
-\twaiterQueue *waiter.Queue
-\tnet         network.Endpoint
-\tprotocol    *protocol `state:\"nosave\"`
-\tstats       tcpip.TransportEndpointStats
-""",
-        "gVisor UDP endpoint protocol link",
-    )
-    text = replace_once(
-        text,
-        """\tpktInfo := udpInfo.ctx.PacketInfo()
-\tpkt := udpInfo.ctx.TryNewPacketBufferFromPayloader(header.UDPMinimumSize+int(pktInfo.MaxHeaderLength), p)
-""",
-        """\tpktInfo := udpInfo.ctx.PacketInfo()
-\tif e.protocol != nil && e.protocol.androidLike && pktInfo.NetProto == header.IPv6ProtocolNumber {
-\t\tudpInfo.ctx.SetIPv6FlowLabel(e.protocol.ipv6FlowLabel(
-\t\t\tpktInfo.LocalAddress,
-\t\t\tpktInfo.RemoteAddress,
-\t\t\tudpInfo.localPort,
-\t\t\tudpInfo.remotePort,
-\t\t))
+def create_flowlabel_tests(root: pathlib.Path) -> None:
+    path = root / TEST_FILE
+    write(
+        path,
+        """package ipv6
+
+import (
+\t"encoding/binary"
+\t"testing"
+
+\t"github.com/metacubex/gvisor/pkg/tcpip"
+\t"github.com/metacubex/gvisor/pkg/tcpip/header"
+)
+
+func TestSipHash24ReferenceVectors(t *testing.T) {
+\tvar key [16]byte
+\tfor i := range key {
+\t\tkey[i] = byte(i)
 \t}
-\tpkt := udpInfo.ctx.TryNewPacketBufferFromPayloader(header.UDPMinimumSize+int(pktInfo.MaxHeaderLength), p)
-""",
-        "gVisor UDP per-flow IPv6 label",
-    )
-    write(path, text)
-
-
-def patch_network_endpoint(root: pathlib.Path) -> None:
-    path = root / "vendor/github.com/metacubex/gvisor/pkg/tcpip/transport/internal/network/endpoint.go"
-    text = read(path)
-    text = replace_once(
-        text,
-        """type WriteContext struct {
-\te     *Endpoint
-\troute *stack.Route
-\tttl   uint8
-\ttos   uint8
-}
-""",
-        """type WriteContext struct {
-\te             *Endpoint
-\troute         *stack.Route
-\tttl           uint8
-\ttos           uint8
-\tipv6FlowLabel uint32
+\tk0 := binary.LittleEndian.Uint64(key[0:8])
+\tk1 := binary.LittleEndian.Uint64(key[8:16])
+\tvectors := []uint64{
+\t\t0x726fdb47dd0e0e31,
+\t\t0x74f839c593dc67fd,
+\t\t0x0d6c8009d9a94f5a,
+\t\t0x85676696d7fb7e2d,
+\t}
+\tmessage := make([]byte, len(vectors)-1)
+\tfor i := range message {
+\t\tmessage[i] = byte(i)
+\t}
+\tfor length, expected := range vectors {
+\t\tif got := sipHash24(k0, k1, message[:length]); got != expected {
+\t\t\tt.Fatalf("length %d: got %#016x, want %#016x", length, got, expected)
+\t\t}
+\t}
 }
 
-// SetIPv6FlowLabel sets the per-write 20-bit IPv6 Flow Label.
-func (c *WriteContext) SetIPv6FlowLabel(label uint32) {
-\tc.ipv6FlowLabel = label & 0x000fffff
+func TestAndroidAutoFlowLabelStablePerFlow(t *testing.T) {
+\tp := protocol{androidLike: true}
+\tp.flowLabelKey[0] = 0x0706050403020100
+\tp.flowLabelKey[1] = 0x0f0e0d0c0b0a0908
+\tsrc := tcpip.AddrFrom16([16]byte{0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1})
+\tdst := tcpip.AddrFrom16([16]byte{0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 2})
+\ttcpPorts := []byte{0x80, 0x00, 0x01, 0xbb}
+\tfirst := p.autoFlowLabel(src, dst, header.TCPProtocolNumber, tcpPorts)
+\tsecond := p.autoFlowLabel(src, dst, header.TCPProtocolNumber, tcpPorts)
+\tif first != second {
+\t\tt.Fatalf("same flow changed label: %#x != %#x", first, second)
+\t}
+\tif first > ipv6FlowLabelMask {
+\t\tt.Fatalf("label exceeds 20 bits: %#x", first)
+\t}
+\tif first&ipv6FlowLabelStatelessFlag == 0 {
+\t\tt.Fatalf("automatic label is outside Linux stateless range: %#x", first)
+\t}
+\totherPorts := []byte{0x80, 0x01, 0x01, 0xbb}
+\tif other := p.autoFlowLabel(src, dst, header.TCPProtocolNumber, otherPorts); other == first {
+\t\tt.Fatalf("different flow unexpectedly reused label %#x", first)
+\t}
+
+\totherStack := protocol{androidLike: true}
+\totherStack.flowLabelKey[0] = 0x0807060504030201
+\totherStack.flowLabelKey[1] = 0x100f0e0d0c0b0a09
+\tif other := otherStack.autoFlowLabel(src, dst, header.TCPProtocolNumber, tcpPorts); other == first {
+\t\tt.Fatalf("different per-stack secret unexpectedly reused label %#x", first)
+\t}
+
+\ticmpEchoA := []byte{128, 0, 0, 0, 0x12, 0x34}
+\ticmpEchoB := []byte{128, 0, 0, 0, 0x12, 0x35}
+\tlabelA := p.autoFlowLabel(src, dst, header.ICMPv6ProtocolNumber, icmpEchoA)
+\tlabelB := p.autoFlowLabel(src, dst, header.ICMPv6ProtocolNumber, icmpEchoB)
+\tif labelA == labelB {
+\t\tt.Fatalf("different ICMPv6 identifiers unexpectedly reused label %#x", labelA)
+\t}
 }
 """,
-        "gVisor datagram WriteContext IPv6 label",
     )
-    text = replace_once(
-        text,
-        """\terr := c.route.WritePacket(stack.NetworkHeaderParams{
-\t\tProtocol:              c.e.transProto,
-\t\tTTL:                   c.ttl,
-\t\tTOS:                   c.tos,
-\t\tExperimentOptionValue: expOptVal,
-""",
-        """\terr := c.route.WritePacket(stack.NetworkHeaderParams{
-\t\tProtocol:              c.e.transProto,
-\t\tTTL:                   c.ttl,
-\t\tTOS:                   c.tos,
-\t\tIPv6FlowLabel:         c.ipv6FlowLabel,
-\t\tExperimentOptionValue: expOptVal,
-""",
-        "gVisor datagram network header IPv6 label",
-    )
-    write(path, text)
 
 
 PATCHERS = (
@@ -612,24 +549,19 @@ PATCHERS = (
     patch_sing_gonet,
     patch_stack_registration,
     patch_ipv6,
-    patch_tcp_protocol,
-    patch_tcp_connect,
-    patch_udp_protocol,
-    patch_udp_endpoint,
-    patch_network_endpoint,
 )
 
 
 def verify(root: pathlib.Path) -> None:
     checks = {
         "adapter/outbound/wireguard.go": (
-            "NewStackDeviceAndroidLike",
             "mtu = 1360",
+            "NewStackDeviceAndroidLike",
         ),
         "vendor/github.com/metacubex/sing-wireguard/device_stack.go": (
             "func NewStackDeviceAndroidLike",
-            "tcp.NewProtocolAndroidLike",
-            "udp.NewProtocolAndroidLike",
+            "ipv6.NewProtocolAndroidLike",
+            "SetPortRange(32768, 60999)",
             "DialTCPWithBindAndroidLike",
         ),
         "vendor/github.com/metacubex/sing-wireguard/gonet.go": (
@@ -640,28 +572,15 @@ def verify(root: pathlib.Path) -> None:
             "IPv6FlowLabel uint32",
         ),
         "vendor/github.com/metacubex/gvisor/pkg/tcpip/network/ipv6/ipv6.go": (
-            "FlowLabel:         params.IPv6FlowLabel & 0x000fffff",
-        ),
-        "vendor/github.com/metacubex/gvisor/pkg/tcpip/transport/tcp/protocol.go": (
             "func NewProtocolAndroidLike",
-            "func (p *protocol) ipv6FlowLabel",
-            "flowLabelSecret [16]byte",
+            "func sipHash24",
+            "func (p *protocol) autoFlowLabel",
+            "(bits.RotateLeft32(hash, 16) & ipv6FlowLabelMask) | ipv6FlowLabelStatelessFlag",
+            "FlowLabel:         params.IPv6FlowLabel & ipv6FlowLabelMask",
         ),
-        "vendor/github.com/metacubex/gvisor/pkg/tcpip/transport/tcp/connect.go": (
-            "IPv6FlowLabel:         tf.ipv6FlowLabel",
-            "e.protocol.androidLike",
-        ),
-        "vendor/github.com/metacubex/gvisor/pkg/tcpip/transport/udp/protocol.go": (
-            "func NewProtocolAndroidLike",
-            "func (p *protocol) ipv6FlowLabel",
-        ),
-        "vendor/github.com/metacubex/gvisor/pkg/tcpip/transport/udp/endpoint.go": (
-            "SetIPv6FlowLabel",
-            "e.protocol.androidLike",
-        ),
-        "vendor/github.com/metacubex/gvisor/pkg/tcpip/transport/internal/network/endpoint.go": (
-            "func (c *WriteContext) SetIPv6FlowLabel",
-            "IPv6FlowLabel:         c.ipv6FlowLabel",
+        TEST_FILE: (
+            "TestSipHash24ReferenceVectors",
+            "TestAndroidAutoFlowLabelStablePerFlow",
         ),
     }
     for relative, markers in checks.items():
@@ -670,15 +589,34 @@ def verify(root: pathlib.Path) -> None:
             if marker not in text:
                 raise RuntimeError(f"verify failed: {relative} missing {marker!r}")
 
-    # Android-like deliberately keeps upstream Linux-style SYN generation.
-    connect = read(root / "vendor/github.com/metacubex/gvisor/pkg/tcpip/transport/tcp/connect.go")
-    for forbidden in ("makeDarwinSynOptions", "tf.df = true"):
-        if forbidden in connect:
-            raise RuntimeError(f"verify failed: unexpected macOS behavior {forbidden!r}")
-    endpoint = read(root / "vendor/github.com/metacubex/gvisor/pkg/tcpip/transport/tcp/endpoint.go")
-    for forbidden in ("return math.MaxUint16", "macOSLike"):
-        if forbidden in endpoint:
-            raise RuntimeError(f"verify failed: unexpected macOS behavior {forbidden!r}")
+    device = read(root / "vendor/github.com/metacubex/sing-wireguard/device_stack.go")
+    for forbidden in (
+        "tcp.NewProtocolAndroidLike",
+        "udp.NewProtocolAndroidLike",
+        "SetPortRange(49152, 65535)",
+    ):
+        if forbidden in device:
+            raise RuntimeError(f"verify failed: unexpected non-Android behavior {forbidden!r}")
+
+    ipv6_text = read(root / "vendor/github.com/metacubex/gvisor/pkg/tcpip/network/ipv6/ipv6.go")
+    for forbidden in ("crypto/sha256", "if label == 0", "return 1"):
+        if forbidden in ipv6_text:
+            raise RuntimeError(f"verify failed: obsolete flow-label behavior {forbidden!r}")
+
+
+def already_patched(root: pathlib.Path) -> bool:
+    paths = (
+        root / "adapter/outbound/wireguard.go",
+        root / "vendor/github.com/metacubex/sing-wireguard/device_stack.go",
+        root / "vendor/github.com/metacubex/gvisor/pkg/tcpip/network/ipv6/ipv6.go",
+    )
+    return all(path.is_file() for path in paths) and all(
+        marker in read(path)
+        for path, marker in zip(
+            paths,
+            ("NewStackDeviceAndroidLike", "SetPortRange(32768, 60999)", "func sipHash24"),
+        )
+    )
 
 
 def main() -> None:
@@ -687,11 +625,23 @@ def main() -> None:
     parser.add_argument("--verify-only", action="store_true")
     args = parser.parse_args()
     root = pathlib.Path(args.root).resolve()
-    if not args.verify_only:
-        for patcher in PATCHERS:
-            patcher(root)
+
+    if args.verify_only:
+        verify(root)
+        print("Android-like v1.1.0 WireGuard overlay verified successfully")
+        return
+
+    if already_patched(root):
+        verify(root)
+        print("Android-like v1.1.0 overlay is already applied and verified")
+        return
+
+    validate_pristine(root)
+    for patcher in PATCHERS:
+        patcher(root)
+    create_flowlabel_tests(root)
     verify(root)
-    print("Android-like WireGuard profile verified successfully")
+    print("Android-like v1.1.0 WireGuard overlay applied and verified successfully")
 
 
 if __name__ == "__main__":

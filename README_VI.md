@@ -1,40 +1,26 @@
-# Mihomo v1.19.29 — Windows Android-like WireGuard v1.0.0 IPv6
+# Mihomo 1.19.29 Android-like v1.1.0 — Overlay
 
-Overlay build `verge-mihomo.exe` chạy trên Windows/Clash Verge nhưng dùng gVisor Android/Linux-like cho **mọi WireGuard outbound**.
+Đây chỉ là **gói phụ**, không chứa toàn bộ mã nguồn Mihomo.
 
-## Đưa lên GitHub
+## Cài vào GitHub
 
-1. Tạo nhánh từ source Mihomo `v1.19.29`, nên đặt tên `androidlike-v1.19.29`.
-2. Chép đè toàn bộ nội dung ZIP overlay vào thư mục gốc repository.
-3. Commit và chạy workflow:
+1. Đứng tại branch `androidlike-v1.19.29` được tạo từ tag `v1.19.29`.
+2. Chép toàn bộ nội dung gói này vào thư mục gốc repository.
+3. Vào **Actions** → chạy `Build Windows Android-like Mihomo v1.1.0 IPv6`.
+4. Tải artifact ZIP, dùng `verge-mihomo.exe` và `wintun.dll` với Clash Verge.
 
-```text
-Build Windows Android-like Mihomo v1.0.0 IPv6
-```
+## Cách hoạt động
 
-Artifact:
+- Không thêm `network-profile` vào YAML.
+- Tất cả WireGuard outbound của core chuyên dụng này dùng Android-like gVisor stack.
+- Chạy nhiều WireGuard; mỗi outbound có stack, port state và IPv6 secret riêng.
+- YAML có `mtu` thì giữ nguyên; nếu thiếu sẽ mặc định `1360`.
 
-```text
-verge-mihomo-windows-androidlike-v1.0.0-ipv6-amd64.zip
-├── verge-mihomo.exe
-├── wintun.dll
-├── BUILD_INFO.txt
-└── SHA256SUMS.txt
-```
+## Nâng cấp v1.1.0
 
-## YAML
-
-Không thêm `network-profile`. YAML WireGuard cũ giữ nguyên. Nếu không khai báo `mtu`, core dùng `1360`; nếu đã khai báo thì giữ đúng giá trị YAML.
-
-## Mục tiêu tại MTU 1360
-
-```text
-IPv4: TTL 64, MSS 1320, window 26368, WS 7
-TCP options: MSS,SACK,Timestamp,NOP,WindowScale
-JA4T: 26368_2-4-8-1-3_1320_7
-IPv6: Hop Limit 64, MSS 1300, window 25984, WS 7
-```
-
-Mỗi WireGuard có gVisor stack, port/state và IPv6 flow-label secret riêng. Không tạo Wintun riêng cho từng WireGuard.
-
-Profile này chỉ thay dấu vết L3/L4 bên trong WireGuard; User-Agent, TLS, HTTP/2 và QUIC vẫn thuộc trình duyệt/GPM.
+- Giữ nguyên đường TCP/IPv4 gVisor đã khớp fingerprint Android mục tiêu.
+- Dải port nội bộ Android/Linux: `32768–60999`.
+- IPv6 Flow Label dùng keyed SipHash, ổn định theo flow.
+- Flow Label nằm trong dải stateless Linux mặc định `0x80000–0xFFFFF`.
+- Áp dụng cho TCP, UDP/QUIC và ICMPv6.
+- Không ép TCP keepalive 15 giây cho mọi kết nối Android-like.
