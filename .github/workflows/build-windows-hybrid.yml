@@ -1,4 +1,4 @@
-name: Build Windows Hybrid WireGuard Profiles v4
+name: Build Windows Hybrid WireGuard Profiles v5
 
 on:
   workflow_dispatch:
@@ -17,7 +17,7 @@ concurrency:
 
 env:
   UPSTREAM_TAG: v1.19.29
-  PATCH_REVISION: hybrid-4profiles-v4-tidy-fix
+  PATCH_REVISION: hybrid-4profiles-v5-rng-fix
   GOTOOLCHAIN: local
 
 jobs:
@@ -149,12 +149,12 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v7
         with:
-          name: verge-mihomo-v1.19.29-hybrid-windows-amd64-v4
+          name: verge-mihomo-v1.19.29-hybrid-windows-amd64-v5
           path: |
             dist/verge-mihomo.exe
             dist/wintun.dll
             dist/LICENSE-wintun.txt
             dist/SHA256SUMS.txt
-            dist/verge-mihomo-v1.19.29-hybrid-windows-amd64-v4.zip
+            dist/verge-mihomo-v1.19.29-hybrid-windows-amd64-v5.zip
           if-no-files-found: error
           retention-days: 30
