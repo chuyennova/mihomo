@@ -1,4 +1,4 @@
-name: Build Windows Android-like Mihomo v1.1.0 IPv6
+name: Build Windows Android-like Mihomo v1.1.1 IPv6
 
 on:
   workflow_dispatch:
@@ -10,7 +10,7 @@ on:
       - ".github/workflows/build-windows-androidlike.yml"
 
 concurrency:
-  group: androidlike-v1-1-${{ github.workflow }}-${{ github.ref }}
+  group: androidlike-v1-1-1-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 permissions:
@@ -32,7 +32,7 @@ jobs:
 
     steps:
       - name: Checkout Android-like branch
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           fetch-depth: 1
 
@@ -114,7 +114,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          sha256sum --check --strict /tmp/androidlike-untouched.sha256
+          sha256sum --check --strict --status /tmp/androidlike-untouched.sha256
+          echo "Locked IPv4/TCP/UDP source hashes: OK"
           grep -n 'mtu = 1360' adapter/outbound/wireguard.go
           grep -n 'NewStackDeviceAndroidLike' adapter/outbound/wireguard.go
           grep -n 'SetPortRange(32768, 60999)' vendor/github.com/metacubex/sing-wireguard/device_stack.go
@@ -146,7 +147,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p dist
-          VERSION="androidlike-v1.1.0-v1.19.29-${GITHUB_SHA::7}"
+          VERSION="androidlike-v1.1.1-v1.19.29-${GITHUB_SHA::7}"
           BUILDTIME="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
           go build \
             -mod=vendor \
@@ -164,7 +165,8 @@ jobs:
           curl --fail --location --retry 3 \
             "https://www.wintun.net/builds/wintun-${WINTUN_VERSION}.zip" \
             --output /tmp/wintun.zip
-          echo "${WINTUN_SHA256}  /tmp/wintun.zip" | sha256sum --check --strict
+          echo "${WINTUN_SHA256}  /tmp/wintun.zip" | sha256sum --check --strict --status
+          echo "Official Wintun archive hash: OK"
           DLL_PATH="$(unzip -Z1 /tmp/wintun.zip | grep -E '(^|/)bin/amd64/wintun\.dll$' | head -n 1)"
           test -n "${DLL_PATH}"
           unzip -p /tmp/wintun.zip "${DLL_PATH}" > dist/wintun.dll
@@ -185,7 +187,7 @@ jobs:
           cat > dist/BUILD_INFO.txt <<EOF
           Core: verge-mihomo.exe
           Base: Mihomo v1.19.29
-          Build: Android-like standalone v1.1.0
+          Build: Android-like standalone v1.1.1
           Target: Windows amd64 GOAMD64=v2
           Scope: WireGuard outbound only; one independent gVisor stack per outbound
           YAML: no network-profile field required in this standalone build
@@ -204,7 +206,7 @@ jobs:
           (
             cd dist
             sha256sum verge-mihomo.exe wintun.dll > SHA256SUMS.txt
-            zip -9 -r ../verge-mihomo-windows-androidlike-v1.1.0-ipv6-amd64.zip \
+            zip -9 -r ../verge-mihomo-windows-androidlike-v1.1.1-ipv6-amd64.zip \
               verge-mihomo.exe \
               wintun.dll \
               LICENSE-mihomo.txt \
@@ -212,14 +214,14 @@ jobs:
               BUILD_INFO.txt \
               SHA256SUMS.txt
           )
-          unzip -l verge-mihomo-windows-androidlike-v1.1.0-ipv6-amd64.zip
+          unzip -l verge-mihomo-windows-androidlike-v1.1.1-ipv6-amd64.zip
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
-          name: verge-mihomo-windows-androidlike-v1.1.0-ipv6-amd64-${{ github.sha }}
+          name: verge-mihomo-windows-androidlike-v1.1.1-ipv6-amd64-${{ github.sha }}
           path: |
-            verge-mihomo-windows-androidlike-v1.1.0-ipv6-amd64.zip
+            verge-mihomo-windows-androidlike-v1.1.1-ipv6-amd64.zip
             dist/verge-mihomo.exe
             dist/wintun.dll
             dist/BUILD_INFO.txt
