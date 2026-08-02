@@ -17,7 +17,7 @@ concurrency:
 
 env:
   UPSTREAM_TAG: v1.19.29
-  PATCH_REVISION: hybrid-4profiles-v1
+  PATCH_REVISION: hybrid-4profiles-v2-logging
   GOTOOLCHAIN: local
   GOFLAGS: -mod=vendor
 
@@ -30,58 +30,84 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
 
-      - name: Initialize logs
+      - name: Prepare scripts and initialize diagnostics
         shell: bash
         run: |
+          set -Eeuo pipefail
+          mkdir -p .ci-status logs/steps logs/diagnostics dist
           : > full-build.log
-          mkdir -p .ci-status dist logs
+          # Upload through Windows/GitHub Web may remove executable bits.
+          # All scripts are also invoked explicitly through bash below.
+          find tools/hybrid -type f -name "*.sh" -exec chmod +x {} + || true
           {
+            echo "===== HYBRID BUILD START ====="
             echo "upstream_tag=$UPSTREAM_TAG"
             echo "patch_revision=$PATCH_REVISION"
+            echo "repository=$GITHUB_REPOSITORY"
+            echo "ref=$GITHUB_REF"
             echo "commit_sha=$GITHUB_SHA"
-            echo "build_date_utc=$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+            echo "run_attempt=$GITHUB_RUN_ATTEMPT"
             echo "workflow_run_id=$GITHUB_RUN_ID"
             echo "workflow_run_url=$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+            echo "runner_os=$RUNNER_OS"
+            echo "runner_arch=$RUNNER_ARCH"
+            echo "workspace=$GITHUB_WORKSPACE"
+            echo "build_date_utc=$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+            echo "shell=$(bash --version | head -n1)"
+            echo "pwd=$(pwd)"
+            echo "git=$(git --version)"
+            echo "disk_before=$(df -h . | tail -n1)"
+            echo "===== END INITIAL METADATA ====="
           } | tee -a full-build.log
+          printf '0\n' > .ci-status/prepare.exit
+
+      - name: Record source tree before build
+        shell: bash
+        run: bash tools/hybrid/ci_run.sh source-tree bash tools/hybrid/steps/environment.sh before-go
 
       - name: Set up Go 1.26
+        id: setup_go
         uses: actions/setup-go@v6
         with:
           go-download-base-url: https://github.com/MetaCubeX/go/releases/download/build
           go-version: "1.26"
           cache: true
 
+      - name: Record Go environment
+        if: always()
+        shell: bash
+        run: bash tools/hybrid/ci_run.sh go-environment bash tools/hybrid/steps/environment.sh after-go
+
       - name: Install tools
         shell: bash
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y ca-certificates curl unzip zip
-          sudo update-ca-certificates
+        run: bash tools/hybrid/ci_run.sh install-tools bash tools/hybrid/steps/install_tools.sh
 
       - name: Verify locked source
         shell: bash
-        run: tools/hybrid/ci_run.sh source-verify tools/hybrid/steps/source_verify.sh
+        run: bash tools/hybrid/ci_run.sh source-verify bash tools/hybrid/steps/source_verify.sh
 
       - name: Vendor dependencies
         shell: bash
-        run: tools/hybrid/ci_run.sh vendor tools/hybrid/steps/vendor.sh
+        run: bash tools/hybrid/ci_run.sh vendor bash tools/hybrid/steps/vendor.sh
 
       - name: Apply hybrid dependency patch
         shell: bash
-        run: tools/hybrid/ci_run.sh apply-patch python3 tools/hybrid/apply_hybrid.py --root .
+        run: bash tools/hybrid/ci_run.sh apply-patch python3 tools/hybrid/apply_hybrid.py --root .
 
       - name: Gofmt patched files
         shell: bash
-        run: tools/hybrid/ci_run.sh gofmt tools/hybrid/steps/gofmt.sh
+        run: bash tools/hybrid/ci_run.sh gofmt bash tools/hybrid/steps/gofmt.sh
 
       - name: Verify hybrid patch
         shell: bash
-        run: tools/hybrid/ci_run.sh verify python3 tools/hybrid/apply_hybrid.py --root . --verify-only
+        run: bash tools/hybrid/ci_run.sh verify python3 tools/hybrid/apply_hybrid.py --root . --verify-only
 
       - name: Targeted tests
         shell: bash
-        run: tools/hybrid/ci_run.sh tests tools/hybrid/steps/tests.sh
+        run: bash tools/hybrid/ci_run.sh tests bash tools/hybrid/steps/tests.sh
 
       - name: Compile verge-mihomo.exe
         shell: bash
@@ -90,31 +116,35 @@ jobs:
           GOOS: windows
           GOARCH: amd64
           GOAMD64: v2
-        run: tools/hybrid/ci_run.sh compile tools/hybrid/steps/compile.sh
+        run: bash tools/hybrid/ci_run.sh compile bash tools/hybrid/steps/compile.sh
 
       - name: Download Wintun runtime
         shell: bash
-        run: tools/hybrid/ci_run.sh wintun tools/hybrid/steps/wintun.sh
+        run: bash tools/hybrid/ci_run.sh wintun bash tools/hybrid/steps/wintun.sh
 
       - name: Package binary
         shell: bash
-        run: tools/hybrid/ci_run.sh package tools/hybrid/steps/package.sh
+        run: bash tools/hybrid/ci_run.sh package bash tools/hybrid/steps/package.sh
 
-      - name: Finalize logs
+      - name: Finalize all logs
         if: always()
+        continue-on-error: true
         shell: bash
-        run: tools/hybrid/finalize_logs.sh
+        run: bash tools/hybrid/finalize_logs.sh
 
-      - name: Upload build logs
+      - name: Upload complete build diagnostics
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: hybrid-build-logs-${{ github.run_id }}
+          name: hybrid-build-logs-${{ github.run_id }}-attempt-${{ github.run_attempt }}
           path: |
             summary.txt
+            summary.json
             full-build.log
+            logs/
+            .ci-status/
             dist/hybrid-build-logs.zip
-          if-no-files-found: error
+          if-no-files-found: warn
           retention-days: 30
 
       - name: Upload hybrid binary
