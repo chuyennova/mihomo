@@ -1,0 +1,219 @@
+name: Build Windows Linux-like Mihomo v2
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - linuxlike-v1.19.29
+    paths:
+      - "adapter/outbound/wireguard.go"
+      - "go.mod"
+      - "go.sum"
+      - "tools/linuxlike/**"
+      - ".github/workflows/build-windows-linuxlike.yml"
+
+concurrency:
+  group: linuxlike-v2-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build-windows-amd64:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    env:
+      CGO_ENABLED: "0"
+      GOOS: windows
+      GOARCH: amd64
+      GOAMD64: v2
+      GOTOOLCHAIN: local
+      WINTUN_VERSION: "0.14.1"
+      WINTUN_SHA256: "07c256185d6ee3652e09fa55c0b673e2624b565e02c4b9091c79ca7d2f24ef51"
+
+    steps:
+      - name: Checkout branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Set up MetaCubeX Go 1.26
+        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c
+        with:
+          go-download-base-url: "https://github.com/MetaCubeX/go/releases/download/build"
+          go-version: "1.26"
+          cache: true
+
+      - name: Verify locked source
+        shell: bash
+        run: |
+          set -euo pipefail
+          go version
+          grep '^module github.com/metacubex/mihomo$' go.mod
+          grep -F 'github.com/metacubex/sing-wireguard v0.0.0-20260520151737-7e7c7c1b854c' go.mod
+          grep -F 'github.com/metacubex/gvisor v0.0.0-20251227095601-261ec1326fe8' go.mod
+          test -f tools/linuxlike/apply_linuxlike.py
+          ! grep -n -E 'network-profile|NetworkProfile' adapter/outbound/wireguard.go
+
+      - name: Install packaging tools and CA bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y ca-certificates unzip zip
+          sudo update-ca-certificates
+          cp -f /etc/ssl/certs/ca-certificates.crt component/ca/ca-certificates.crt
+
+      - name: Vendor locked dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          go mod download
+          rm -rf vendor
+          go mod vendor
+          test -f vendor/github.com/metacubex/sing-wireguard/device_stack.go
+          test -f vendor/github.com/metacubex/sing-wireguard/gonet.go
+          test -f vendor/github.com/metacubex/gvisor/pkg/tcpip/stack/registration.go
+          test -f vendor/github.com/metacubex/gvisor/pkg/tcpip/network/ipv4/ipv4.go
+          test -f vendor/github.com/metacubex/gvisor/pkg/tcpip/network/ipv6/ipv6.go
+          test -f vendor/github.com/metacubex/gvisor/pkg/tcpip/transport/tcp/protocol.go
+          test -f vendor/github.com/metacubex/gvisor/pkg/tcpip/transport/tcp/endpoint.go
+          test -f vendor/github.com/metacubex/gvisor/pkg/tcpip/transport/tcp/connect.go
+          test -f vendor/github.com/metacubex/gvisor/pkg/tcpip/transport/udp/protocol.go
+          test -f vendor/github.com/metacubex/gvisor/pkg/tcpip/transport/udp/endpoint.go
+          test -f vendor/github.com/metacubex/gvisor/pkg/tcpip/transport/udp/forwarder.go
+          test -f vendor/github.com/metacubex/gvisor/pkg/tcpip/transport/internal/network/endpoint.go
+
+      - name: Apply WireGuard-only Linux-like v2 profile
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 tools/linuxlike/apply_linuxlike.py --root .
+          gofmt -w \
+            adapter/outbound/wireguard.go \
+            vendor/github.com/metacubex/sing-wireguard/device_stack.go \
+            vendor/github.com/metacubex/sing-wireguard/gonet.go \
+            vendor/github.com/metacubex/gvisor/pkg/tcpip/stack/registration.go \
+            vendor/github.com/metacubex/gvisor/pkg/tcpip/network/ipv4/ipv4.go \
+            vendor/github.com/metacubex/gvisor/pkg/tcpip/network/ipv6/ipv6.go \
+            vendor/github.com/metacubex/gvisor/pkg/tcpip/transport/tcp/protocol.go \
+            vendor/github.com/metacubex/gvisor/pkg/tcpip/transport/tcp/endpoint.go \
+            vendor/github.com/metacubex/gvisor/pkg/tcpip/transport/tcp/connect.go \
+            vendor/github.com/metacubex/gvisor/pkg/tcpip/transport/udp/protocol.go \
+            vendor/github.com/metacubex/gvisor/pkg/tcpip/transport/udp/endpoint.go \
+            vendor/github.com/metacubex/gvisor/pkg/tcpip/transport/internal/network/endpoint.go
+          python3 tools/linuxlike/apply_linuxlike.py --root . --verify-only
+
+      - name: Verify profile isolation and expected source
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -n 'NewStackDeviceLinuxLike' adapter/outbound/wireguard.go
+          ! grep -q 'NewStackDeviceLinuxLike' adapter/outbound/openvpn.go
+          ! grep -q 'NewStackDeviceLinuxLike' adapter/outbound/masque.go
+          ! grep -n -E 'network-profile|NetworkProfile' adapter/outbound/wireguard.go
+          grep -n 'SetPortRange(32768, 60999)' vendor/github.com/metacubex/sing-wireguard/device_stack.go
+          grep -n 'DialTCPWithBindLinuxLike' vendor/github.com/metacubex/sing-wireguard/device_stack.go
+          grep -n 'if forceKeepalive' vendor/github.com/metacubex/sing-wireguard/gonet.go
+          grep -n 'Emulate linux option order' vendor/github.com/metacubex/gvisor/pkg/tcpip/transport/tcp/connect.go
+          grep -n 'math.MaxUint16 / mss' vendor/github.com/metacubex/gvisor/pkg/tcpip/transport/tcp/endpoint.go
+          grep -n 'tf.df = true' vendor/github.com/metacubex/gvisor/pkg/tcpip/transport/tcp/connect.go
+          grep -n 'IPv4ID:.*tf.ipv4ID' vendor/github.com/metacubex/gvisor/pkg/tcpip/transport/tcp/connect.go
+          grep -n 'FlowLabel:.*params.IPv6FlowLabel' vendor/github.com/metacubex/gvisor/pkg/tcpip/network/ipv6/ipv6.go
+          grep -n 'PMTUDiscoveryWant' vendor/github.com/metacubex/gvisor/pkg/tcpip/transport/internal/network/endpoint.go
+          grep -n 'func newEndpoint(s \*stack.Stack' vendor/github.com/metacubex/gvisor/pkg/tcpip/transport/udp/endpoint.go
+          grep -n 'newEndpoint(r.stack, r.pkt.NetworkProtocolNumber, queue)' vendor/github.com/metacubex/gvisor/pkg/tcpip/transport/udp/forwarder.go
+          ! grep -q 'makeDarwinSynOptions' vendor/github.com/metacubex/gvisor/pkg/tcpip/transport/tcp/connect.go
+
+      - name: Compile-check patched Linux target
+        shell: bash
+        run: |
+          set -euo pipefail
+          GOOS=linux GOARCH=amd64 GOAMD64=v2 CGO_ENABLED=0 \
+            go test -mod=vendor -tags "with_gvisor" -run '^$' ./adapter/outbound
+
+      - name: Build verge-mihomo.exe
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          VERSION="linuxlike-v2-v1.19.29-${GITHUB_SHA::7}"
+          BUILDTIME="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+          go build \
+            -mod=vendor \
+            -tags "with_gvisor" \
+            -trimpath \
+            -ldflags "-X 'github.com/metacubex/mihomo/constant.Version=${VERSION}' -X 'github.com/metacubex/mihomo/constant.BuildTime=${BUILDTIME}' -w -s -buildid=" \
+            -o dist/verge-mihomo.exe \
+            .
+          test -s dist/verge-mihomo.exe
+
+      - name: Add official wintun.dll
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --location --retry 3 \
+            "https://www.wintun.net/builds/wintun-${WINTUN_VERSION}.zip" \
+            --output /tmp/wintun.zip
+          echo "${WINTUN_SHA256}  /tmp/wintun.zip" | sha256sum --check --strict
+          DLL_PATH="$(unzip -Z1 /tmp/wintun.zip | grep -E '(^|/)bin/amd64/wintun\.dll$' | head -n 1)"
+          test -n "${DLL_PATH}"
+          unzip -p /tmp/wintun.zip "${DLL_PATH}" > dist/wintun.dll
+          test -s dist/wintun.dll
+
+          LICENSE_PATH="$(unzip -Z1 /tmp/wintun.zip | grep -Ei '(^|/)(prebuilt-binaries-license|license)(\.txt)?$' | head -n 1 || true)"
+          if [ -n "${LICENSE_PATH}" ]; then
+            unzip -p /tmp/wintun.zip "${LICENSE_PATH}" > dist/LICENSE-wintun.txt
+          else
+            printf '%s\n' 'Official signed Wintun binary; see the upstream Wintun archive for its redistribution license.' > dist/LICENSE-wintun.txt
+          fi
+
+      - name: Package Clash Verge core
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp LICENSE dist/LICENSE-mihomo.txt
+          cat > dist/BUILD_INFO.txt <<EOF
+          Core: verge-mihomo.exe
+          Base: Mihomo v1.19.29
+          Target: Windows amd64 GOAMD64=v2
+          Scope: WireGuard outbound only; every WireGuard outbound uses one isolated Linux-like gVisor stack
+          YAML selector: none; dedicated build is Linux-like by default
+          TCP option order: original gVisor Linux order
+          IPv4 TTL / IPv6 Hop Limit: 64 / 64
+          Source port range: 32768-60999
+          TCP SYN receive window: Linux-style near 65535, rounded to MSS
+          TCP keepalive: not forced by the WireGuard adapter
+          IPv4 TCP: PMTU/DF on SYN, private per-socket incrementing IP ID
+          IPv4 UDP: Linux-like PMTU/DF and private per-socket incrementing IP ID
+          IPv6 TCP/UDP: stable stateless-range flow label derived from a salted flow hash
+          MTU/MSS: preserved from Mihomo configuration; default MTU remains 1408
+          Git commit: ${GITHUB_SHA}
+          EOF
+          (
+            cd dist
+            sha256sum verge-mihomo.exe wintun.dll > SHA256SUMS.txt
+            zip -9 -r ../verge-mihomo-windows-linuxlike-v2-amd64.zip \
+              verge-mihomo.exe \
+              wintun.dll \
+              LICENSE-mihomo.txt \
+              LICENSE-wintun.txt \
+              BUILD_INFO.txt \
+              SHA256SUMS.txt
+          )
+          unzip -l verge-mihomo-windows-linuxlike-v2-amd64.zip
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: verge-mihomo-windows-linuxlike-v2-amd64-${{ github.sha }}
+          path: |
+            verge-mihomo-windows-linuxlike-v2-amd64.zip
+            dist/verge-mihomo.exe
+            dist/wintun.dll
+            dist/BUILD_INFO.txt
+            dist/SHA256SUMS.txt
+          if-no-files-found: error
+          retention-days: 30
