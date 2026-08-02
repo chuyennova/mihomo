@@ -1,4 +1,4 @@
-name: Build Windows Hybrid WireGuard Profiles
+name: Build Windows Hybrid WireGuard Profiles v3
 
 on:
   workflow_dispatch:
@@ -17,9 +17,8 @@ concurrency:
 
 env:
   UPSTREAM_TAG: v1.19.29
-  PATCH_REVISION: hybrid-4profiles-v2-logging
+  PATCH_REVISION: hybrid-4profiles-v3-vendor-fix
   GOTOOLCHAIN: local
-  GOFLAGS: -mod=vendor
 
 jobs:
   build:
@@ -39,9 +38,8 @@ jobs:
           set -Eeuo pipefail
           mkdir -p .ci-status logs/steps logs/diagnostics dist
           : > full-build.log
-          # Upload through Windows/GitHub Web may remove executable bits.
-          # All scripts are also invoked explicitly through bash below.
-          find tools/hybrid -type f -name "*.sh" -exec chmod +x {} + || true
+          # All scripts are invoked explicitly through bash/python, so file
+          # executable bits are irrelevant even when uploaded from Windows.
           {
             echo "===== HYBRID BUILD START ====="
             echo "upstream_tag=$UPSTREAM_TAG"
@@ -151,12 +149,12 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v7
         with:
-          name: verge-mihomo-v1.19.29-hybrid-windows-amd64-v2
+          name: verge-mihomo-v1.19.29-hybrid-windows-amd64-v3
           path: |
             dist/verge-mihomo.exe
             dist/wintun.dll
             dist/LICENSE-wintun.txt
             dist/SHA256SUMS.txt
-            dist/verge-mihomo-v1.19.29-hybrid-windows-amd64-v2.zip
+            dist/verge-mihomo-v1.19.29-hybrid-windows-amd64-v3.zip
           if-no-files-found: error
           retention-days: 30
