@@ -1,4 +1,4 @@
-name: Build Windows Hybrid WireGuard Profiles v5
+name: Build Windows Hybrid WireGuard Profiles v6
 
 on:
   workflow_dispatch:
@@ -17,7 +17,7 @@ concurrency:
 
 env:
   UPSTREAM_TAG: v1.19.29
-  PATCH_REVISION: hybrid-4profiles-v5-rng-fix
+  PATCH_REVISION: hybrid-4profiles-v6-buildtags-fix
   GOTOOLCHAIN: local
 
 jobs:
@@ -104,10 +104,15 @@ jobs:
         run: bash tools/hybrid/ci_run.sh verify python3 tools/hybrid/apply_hybrid.py --root . --verify-only
 
       - name: Targeted tests
+        id: tests
+        continue-on-error: true
         shell: bash
         run: bash tools/hybrid/ci_run.sh tests bash tools/hybrid/steps/tests.sh
 
       - name: Compile verge-mihomo.exe
+        id: compile
+        if: always()
+        continue-on-error: true
         shell: bash
         env:
           CGO_ENABLED: "0"
@@ -117,10 +122,16 @@ jobs:
         run: bash tools/hybrid/ci_run.sh compile bash tools/hybrid/steps/compile.sh
 
       - name: Download Wintun runtime
+        id: wintun
+        if: always() && steps.compile.outcome == 'success'
+        continue-on-error: true
         shell: bash
         run: bash tools/hybrid/ci_run.sh wintun bash tools/hybrid/steps/wintun.sh
 
       - name: Package binary
+        id: package
+        if: always() && steps.compile.outcome == 'success' && steps.wintun.outcome == 'success'
+        continue-on-error: true
         shell: bash
         run: bash tools/hybrid/ci_run.sh package bash tools/hybrid/steps/package.sh
 
@@ -146,15 +157,20 @@ jobs:
           retention-days: 30
 
       - name: Upload hybrid binary
-        if: success()
+        if: always() && steps.tests.outcome == 'success' && steps.compile.outcome == 'success' && steps.wintun.outcome == 'success' && steps.package.outcome == 'success'
         uses: actions/upload-artifact@v7
         with:
-          name: verge-mihomo-v1.19.29-hybrid-windows-amd64-v5
+          name: verge-mihomo-v1.19.29-hybrid-windows-amd64-v6
           path: |
             dist/verge-mihomo.exe
             dist/wintun.dll
             dist/LICENSE-wintun.txt
             dist/SHA256SUMS.txt
-            dist/verge-mihomo-v1.19.29-hybrid-windows-amd64-v5.zip
+            dist/verge-mihomo-v1.19.29-hybrid-windows-amd64-v6.zip
           if-no-files-found: error
           retention-days: 30
+
+      - name: Final quality gate
+        if: always()
+        shell: bash
+        run: bash tools/hybrid/final_gate.sh
