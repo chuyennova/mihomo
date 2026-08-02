@@ -173,6 +173,49 @@ func dialTCPWithBind(ctx context.Context, s *stack.Stack, localAddr, remoteAddr 
     write(path, text)
 
 
+def patch_stack_flow_label(root: pathlib.Path) -> None:
+    path = root / "vendor/github.com/metacubex/gvisor/pkg/tcpip/stack/linuxlike_flow.go"
+    if path.exists():
+        raise RuntimeError(f"Linux flow-label helper already exists: {path}")
+    write(
+        path,
+        """// SPDX-License-Identifier: Apache-2.0
+
+package stack
+
+import (
+\t\"crypto/sha256\"
+\t\"encoding/binary\"
+\t\"math/bits\"
+
+\t\"github.com/metacubex/gvisor/pkg/tcpip\"
+)
+
+// LinuxLikeIPv6FlowLabel models Linux's wire-visible automatic IPv6 label:
+// one salted flow hash shared by TCP and UDP in this stack, rotate-left by 16,
+// keep 20 bits, then set the stateless-range flag. The private stack seed keeps
+// different WireGuard outbounds isolated.
+func (s *Stack) LinuxLikeIPv6FlowLabel(localAddr, remoteAddr tcpip.Address, localPort, remotePort uint16, protocol tcpip.TransportProtocolNumber) uint32 {
+\th := sha256.New()
+\tvar secret [8]byte
+\tbinary.BigEndian.PutUint32(secret[0:4], s.seed)
+\tbinary.BigEndian.PutUint32(secret[4:8], s.tsOffsetSecret)
+\t_, _ = h.Write(secret[:])
+\t_, _ = h.Write(localAddr.AsSlice())
+\t_, _ = h.Write(remoteAddr.AsSlice())
+\tvar tuple [8]byte
+\tbinary.BigEndian.PutUint16(tuple[0:2], localPort)
+\tbinary.BigEndian.PutUint16(tuple[2:4], remotePort)
+\tbinary.BigEndian.PutUint32(tuple[4:8], uint32(protocol))
+\t_, _ = h.Write(tuple[:])
+\tsum := h.Sum(nil)
+\tflowHash := bits.RotateLeft32(binary.BigEndian.Uint32(sum[:4]), 16)
+\treturn (flowHash & 0x0007ffff) | 0x00080000
+}
+""",
+    )
+
+
 def patch_tcp_protocol(root: pathlib.Path) -> None:
     path = root / "vendor/github.com/metacubex/gvisor/pkg/tcpip/transport/tcp/protocol.go"
     text = read(path)
@@ -246,28 +289,6 @@ func newProtocol(s *stack.Stack, cc string, probe TCPProbeFunc, linuxLike bool) 
 """,
         "TCP protocol initialization",
     )
-    text = replace_once(
-        text,
-        """func (p *protocol) tsOffset(src, dst tcpip.Address) tcp.TSOffset {
-""",
-        """func (p *protocol) linuxIPv6FlowLabel(id stack.TransportEndpointID) uint32 {
-\th := sha256.New()
-\t_, _ = h.Write(p.tsOffsetSecret[:])
-\t_, _ = h.Write(id.LocalAddress.AsSlice())
-\t_, _ = h.Write(id.RemoteAddress.AsSlice())
-\tvar ports [4]byte
-\tbinary.BigEndian.PutUint16(ports[0:2], id.LocalPort)
-\tbinary.BigEndian.PutUint16(ports[2:4], id.RemotePort)
-\t_, _ = h.Write(ports[:])
-\t// Linux reserves the upper half for stateless automatically generated
-\t// labels and derives the value from a salted flow hash.
-\treturn (binary.BigEndian.Uint32(h.Sum(nil)[:4]) & 0x0007ffff) | 0x00080000
-}
-
-func (p *protocol) tsOffset(src, dst tcpip.Address) tcp.TSOffset {
-""",
-        "TCP Linux IPv6 flow-label helper",
-    )
     write(path, text)
 
 
@@ -284,10 +305,11 @@ def patch_tcp_endpoint(root: pathlib.Path) -> None:
 \t// emitted by this endpoint.
 \ttxHash uint32
 
-\t// Linux uses a private IPv4 ID generator for connected sockets. Keep it
-\t// per endpoint so WireGuard outbounds and flows do not share state.
-\tipv4IDMu sync.Mutex `state:\"nosave\"`
-\tipv4ID   uint16
+\t// Linux uses private per-socket network identity state. Keep it per
+\t// endpoint so WireGuard outbounds and flows do not share state.
+\tipv4IDMu      sync.Mutex `state:\"nosave\"`
+\tipv4ID        uint16
+\tipv6FlowLabel uint32
 """,
         "TCP endpoint IPv4 ID state",
     )
@@ -341,6 +363,22 @@ func (e *Endpoint) initialReceiveWindow() int {
 \te.ipv4ID += count
 \te.ipv4IDMu.Unlock()
 \treturn id
+}
+
+func (e *Endpoint) linuxIPv6FlowLabel(id stack.TransportEndpointID) uint32 {
+\te.ipv4IDMu.Lock()
+\tif e.ipv6FlowLabel == 0 {
+\t\te.ipv6FlowLabel = e.stack.LinuxLikeIPv6FlowLabel(
+\t\t\tid.LocalAddress,
+\t\t\tid.RemoteAddress,
+\t\t\tid.LocalPort,
+\t\t\tid.RemotePort,
+\t\t\tProtocolNumber,
+\t\t)
+\t}
+\tlabel := e.ipv6FlowLabel
+\te.ipv4IDMu.Unlock()
+\treturn label
 }
 
 func (e *Endpoint) isOwnedByUser() bool {
@@ -402,7 +440,7 @@ def patch_tcp_connect(root: pathlib.Path) -> None:
 \t\t\t}
 \t\t\ttf.ipv4ID = e.nextLinuxIPv4ID(idCount)
 \t\tcase header.IPv6ProtocolNumber:
-\t\t\ttf.ipv6FlowLabel = e.protocol.linuxIPv6FlowLabel(tf.id)
+\t\t\ttf.ipv6FlowLabel = e.linuxIPv6FlowLabel(tf.id)
 \t\t}
 \t}
 """,
@@ -425,6 +463,7 @@ def patch_tcp_connect(root: pathlib.Path) -> None:
 \t\t\tIPv4ID:                tf.ipv4ID,
 \t\t\tIPv4IDSet:             tf.ipv4IDSet,
 \t\t\tIPv6FlowLabel:         tf.ipv6FlowLabel,
+\t\t\tEnforceLocalDF:         tf.ipv4IDSet && tf.df,
 \t\t\tDF:                    tf.df,
 \t\t\tExperimentOptionValue: tf.expOptVal,
 \t\t}, pkt); err != nil {
@@ -461,6 +500,7 @@ def patch_tcp_connect(root: pathlib.Path) -> None:
 \t\tIPv4ID:                tf.ipv4ID,
 \t\tIPv4IDSet:             tf.ipv4IDSet,
 \t\tIPv6FlowLabel:         tf.ipv6FlowLabel,
+\t\tEnforceLocalDF:         tf.ipv4IDSet && tf.df,
 \t\tDF:                    tf.df,
 \t\tExperimentOptionValue: tf.expOptVal,
 \t}, pkt); err != nil {
@@ -491,9 +531,28 @@ def patch_network_header_contract(root: pathlib.Path) -> None:
 \t// IPv6FlowLabel is the 20-bit Flow Label used only for IPv6 packets.
 \tIPv6FlowLabel uint32
 
+\t// EnforceLocalDF makes the IPv4 layer return ErrMessageTooLong instead
+\t// of fragmenting a locally generated packet carrying DF. Upstream gVisor
+\t// currently enforces that path only for forwarded packets.
+\tEnforceLocalDF bool
+
 \t// DF indicates whether the DF bit should be set.
 """,
         "NetworkHeaderParams identity fields",
+    )
+    text = replace_once(
+        text,
+        """	// IsForwardedPacket is true if the packet is being forwarded.
+	IsForwardedPacket bool
+""",
+        """	// IsForwardedPacket is true if the packet is being forwarded.
+	IsForwardedPacket bool
+
+	// EnforceLocalDF is true when a locally generated Linux-like packet
+	// must not be fragmented after the transport selected DF.
+	EnforceLocalDF bool
+""",
+        "NetworkPacketInfo local DF marker",
     )
     write(path, text)
 
@@ -524,6 +583,30 @@ def patch_network_header_contract(root: pathlib.Path) -> None:
 """,
         "IPv4 transport-provided ID",
     )
+    text = replace_once(
+        text,
+        """	ipH.SetChecksum(^ipH.CalculateChecksum())
+	pkt.NetworkProtocolNumber = ProtocolNumber
+	return nil
+}
+""",
+        """	ipH.SetChecksum(^ipH.CalculateChecksum())
+	pkt.NetworkProtocolNumber = ProtocolNumber
+	pkt.NetworkPacketInfo.EnforceLocalDF = params.EnforceLocalDF
+	return nil
+}
+""",
+        "IPv4 local DF marker propagation",
+    )
+    text = replace_once(
+        text,
+        """		if h.Flags()&header.IPv4FlagDontFragment != 0 && pkt.NetworkPacketInfo.IsForwardedPacket {
+""",
+        """		if h.Flags()&header.IPv4FlagDontFragment != 0 &&
+			(pkt.NetworkPacketInfo.IsForwardedPacket || pkt.NetworkPacketInfo.EnforceLocalDF) {
+""",
+        "IPv4 local DF enforcement",
+    )
     write(path, text)
 
     path = root / "vendor/github.com/metacubex/gvisor/pkg/tcpip/network/ipv6/ipv6.go"
@@ -549,43 +632,16 @@ def patch_udp_protocol(root: pathlib.Path) -> None:
     text = read(path)
     text = replace_once(
         text,
-        """import (
-\t\"github.com/metacubex/gvisor/pkg/tcpip\"
-""",
-        """import (
-\t\"crypto/sha256\"
-\t\"encoding/binary\"
-\t\"fmt\"
-
-\t\"github.com/metacubex/gvisor/pkg/tcpip\"
-""",
-        "UDP imports",
-    )
-    text = replace_once(
-        text,
         """type protocol struct {
 \tstack *stack.Stack
 }
 """,
         """type protocol struct {
-\tstack           *stack.Stack
-\tlinuxLike       bool `state:\"nosave\"`
-\tflowLabelSecret [16]byte
-}
-
-func (p *protocol) linuxIPv6FlowLabel(localAddr, remoteAddr tcpip.Address, localPort, remotePort uint16) uint32 {
-\th := sha256.New()
-\t_, _ = h.Write(p.flowLabelSecret[:])
-\t_, _ = h.Write(localAddr.AsSlice())
-\t_, _ = h.Write(remoteAddr.AsSlice())
-\tvar ports [4]byte
-\tbinary.BigEndian.PutUint16(ports[0:2], localPort)
-\tbinary.BigEndian.PutUint16(ports[2:4], remotePort)
-\t_, _ = h.Write(ports[:])
-\treturn (binary.BigEndian.Uint32(h.Sum(nil)[:4]) & 0x0007ffff) | 0x00080000
+\tstack     *stack.Stack
+\tlinuxLike bool `state:\"nosave\"`
 }
 """,
-        "UDP Linux protocol fields",
+        "UDP Linux protocol field",
     )
     text = replace_once(
         text,
@@ -611,30 +667,18 @@ func (p *protocol) linuxIPv6FlowLabel(localAddr, remoteAddr tcpip.Address, local
 }
 """,
         """func NewProtocol(s *stack.Stack) stack.TransportProtocol {
-\treturn newProtocol(s, false)
+\treturn &protocol{stack: s}
 }
 
 // NewProtocolLinuxLike enables Linux UDP PMTU, IPv4-ID and IPv6 flow-label
 // behavior only for the independent WireGuard stack selecting it.
 func NewProtocolLinuxLike(s *stack.Stack) stack.TransportProtocol {
-\treturn newProtocol(s, true)
-}
-
-func newProtocol(s *stack.Stack, linuxLike bool) stack.TransportProtocol {
-\tp := &protocol{stack: s, linuxLike: linuxLike}
-\tif linuxLike {
-\t\trng := s.SecureRNG()
-\t\tif n, err := rng.Reader.Read(p.flowLabelSecret[:]); err != nil || n != len(p.flowLabelSecret) {
-\t\t\tpanic(fmt.Sprintf("Read() failed: %v", err))
-\t\t}
-\t}
-\treturn p
+\treturn &protocol{stack: s, linuxLike: true}
 }
 """,
         "UDP protocol constructors",
     )
     write(path, text)
-
 
 def patch_udp_endpoint(root: pathlib.Path) -> None:
     path = root / "vendor/github.com/metacubex/gvisor/pkg/tcpip/transport/udp/endpoint.go"
@@ -692,13 +736,20 @@ func (e *endpoint) WakeupWriters() {
 \t\tpktInfo := ctx.PacketInfo()
 \t\tswitch pktInfo.NetProto {
 \t\tcase header.IPv4ProtocolNumber:
-\t\t\tctx.SetIPv4ID(e.nextLinuxIPv4ID())
+\t\t\t// Linux uses the per-socket inet_id only when the UDP socket
+\t\t\t// has a connected destination. Unconnected UDP with DF keeps
+\t\t\t// the atomic-datagram ID at zero; without DF the IPv4 layer
+\t\t\t// selects its normal non-atomic ID.
+\t\t\tif connected {
+\t\t\t\tctx.SetIPv4ID(e.nextLinuxIPv4ID())
+\t\t\t}
 \t\tcase header.IPv6ProtocolNumber:
-\t\t\tctx.SetIPv6FlowLabel(e.protocol.linuxIPv6FlowLabel(
+\t\t\tctx.SetIPv6FlowLabel(e.stack.LinuxLikeIPv6FlowLabel(
 \t\t\t\tpktInfo.LocalAddress,
 \t\t\t\tpktInfo.RemoteAddress,
 \t\t\t\te.localPort,
 \t\t\t\tdst.Port,
+\t\t\t\tProtocolNumber,
 \t\t\t))
 \t\t}
 \t}
@@ -781,6 +832,7 @@ func (c *WriteContext) SetIPv6FlowLabel(label uint32) {
 \t\tIPv4ID:                c.ipv4ID,
 \t\tIPv4IDSet:             c.ipv4IDSet,
 \t\tIPv6FlowLabel:         c.ipv6FlowLabel,
+\t\tEnforceLocalDF:         c.e.linuxLike && c.df,
 \t\tDF:                    c.df,
 \t\tExperimentOptionValue: expOptVal,
 \t}, pkt)
@@ -895,38 +947,50 @@ def verify(root: pathlib.Path) -> None:
             "func DialTCPWithBindLinuxLike",
             "if forceKeepalive",
         ],
+        "vendor/github.com/metacubex/gvisor/pkg/tcpip/stack/linuxlike_flow.go": [
+            "func (s *Stack) LinuxLikeIPv6FlowLabel",
+            "bits.RotateLeft32",
+            "uint32(protocol)",
+            "0x00080000",
+        ],
         "vendor/github.com/metacubex/gvisor/pkg/tcpip/transport/tcp/protocol.go": [
             "linuxLike bool",
             "func NewProtocolLinuxLike",
-            "func (p *protocol) linuxIPv6FlowLabel",
-            "0x00080000",
         ],
         "vendor/github.com/metacubex/gvisor/pkg/tcpip/transport/tcp/endpoint.go": [
             "nextLinuxIPv4ID",
+            "func (e *Endpoint) linuxIPv6FlowLabel",
             "math.MaxUint16 / mss",
         ],
         "vendor/github.com/metacubex/gvisor/pkg/tcpip/transport/tcp/connect.go": [
             "tf.df = true",
             "IPv4ID:                tf.ipv4ID",
             "IPv6FlowLabel:         tf.ipv6FlowLabel",
+            "EnforceLocalDF:",
+            "e.linuxIPv6FlowLabel",
             "Emulate linux option order",
         ],
         "vendor/github.com/metacubex/gvisor/pkg/tcpip/stack/registration.go": [
             "IPv4IDSet bool",
             "IPv6FlowLabel uint32",
+            "EnforceLocalDF bool",
         ],
         "vendor/github.com/metacubex/gvisor/pkg/tcpip/network/ipv4/ipv4.go": [
             "if params.IPv4IDSet",
+            "pkt.NetworkPacketInfo.EnforceLocalDF = params.EnforceLocalDF",
+            "pkt.NetworkPacketInfo.IsForwardedPacket || pkt.NetworkPacketInfo.EnforceLocalDF",
         ],
         "vendor/github.com/metacubex/gvisor/pkg/tcpip/network/ipv6/ipv6.go": [
             "FlowLabel:         params.IPv6FlowLabel",
         ],
         "vendor/github.com/metacubex/gvisor/pkg/tcpip/transport/udp/protocol.go": [
             "func NewProtocolLinuxLike",
-            "linuxIPv6FlowLabel",
+            "linuxLike: true",
         ],
         "vendor/github.com/metacubex/gvisor/pkg/tcpip/transport/udp/endpoint.go": [
             "enableLinuxLike",
+            "if connected",
+            "LinuxLikeIPv6FlowLabel",
             "SetIPv4ID",
             "SetIPv6FlowLabel",
         ],
@@ -935,6 +999,7 @@ def verify(root: pathlib.Path) -> None:
             "PMTUDiscoveryWant",
             "IPv4IDSet:             c.ipv4IDSet",
             "IPv6FlowLabel:         c.ipv6FlowLabel",
+            "c.e.linuxLike && c.df",
         ],
     }
     for rel, needles in required.items():
@@ -962,10 +1027,16 @@ def verify(root: pathlib.Path) -> None:
     if "return math.MaxUint16\n" in endpoint or "return 4\n" in endpoint:
         raise RuntimeError("macOS fixed SYN window/window scale leaked into Linux-like profile")
 
+    tcp_protocol = read(root / "vendor/github.com/metacubex/gvisor/pkg/tcpip/transport/tcp/protocol.go")
+    udp_protocol = read(root / "vendor/github.com/metacubex/gvisor/pkg/tcpip/transport/udp/protocol.go")
+    if "linuxIPv6FlowLabel" in tcp_protocol or "linuxIPv6FlowLabel" in udp_protocol:
+        raise RuntimeError("separate TCP/UDP flow-label generators must not exist in v3")
+
     udp_endpoint = read(root / "vendor/github.com/metacubex/gvisor/pkg/tcpip/transport/udp/endpoint.go")
     if "func newEndpoint(s *stack.Stack, netProto tcpip.NetworkProtocolNumber" not in udp_endpoint:
         raise RuntimeError("UDP newEndpoint signature changed; forwarder compatibility is at risk")
-
+    if "case header.IPv4ProtocolNumber:\n\t\t\tctx.SetIPv4ID" in udp_endpoint:
+        raise RuntimeError("unconnected UDP still receives a private socket IPv4 ID")
 
 def main() -> int:
     parser = argparse.ArgumentParser()
@@ -977,6 +1048,7 @@ def main() -> int:
         patch_mihomo(root)
         patch_sing_device_stack(root)
         patch_sing_gonet(root)
+        patch_stack_flow_label(root)
         patch_tcp_protocol(root)
         patch_tcp_endpoint(root)
         patch_tcp_connect(root)
@@ -985,7 +1057,7 @@ def main() -> int:
         patch_udp_endpoint(root)
         patch_datagram_network(root)
     verify(root)
-    print("Linux-like WireGuard v2 patch verification: OK")
+    print("Linux-like WireGuard v3 patch verification: OK")
     return 0
 
 
