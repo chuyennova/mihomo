@@ -52,3 +52,7 @@ Không áp tiếp ba overlay macOS/Linux/Android cũ sau overlay này. `apply_hy
 - Script vá dùng exact-match trên dependency khóa cứng.
 - Đã tải đúng các file source tại commit khóa của `sing-wireguard` và gVisor, áp patch thật, verify và `gofmt` thành công trên toàn bộ 13 file dependency bị tác động.
 - Môi trường hiện tại không tải được toàn bộ Go module graph và chỉ có Go 1.23.2; compile cuối bằng MetaCubeX Go 1.26 phải được xác nhận bằng workflow GitHub Actions đi kèm. Xem `tools/hybrid/STATIC_CHECK_REPORT.txt`.
+
+## Ghi log CI v2
+
+Workflow v2 gọi mọi script qua `bash`, đồng thời sửa quyền thực thi sau checkout nên không còn phụ thuộc executable bit khi upload từ Windows/GitHub Web. Mỗi bước tạo một file riêng trong `logs/steps/`, ghi chung vào `full-build.log`, lưu exit code trong `.ci-status/` và khi lỗi tạo thêm chẩn đoán trong `logs/diagnostics/`. Bước `Finalize all logs` luôn chạy và không được phép che mất lỗi gốc.

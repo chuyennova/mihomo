@@ -32,3 +32,12 @@
 ## Xác minh patch trên dependency thật
 
 Đã tải các file gốc trực tiếp tại đúng commit khóa của `sing-wireguard` và gVisor, chạy `apply_hybrid.py`, verify lại marker và `gofmt` thành công cho 13 file bị tác động. Việc compile toàn bộ vẫn được giao cho workflow vì môi trường đóng gói không tải được toàn bộ module graph/Go 1.26.
+
+## CI logging revision v2
+
+- Fixed exit code 126 caused by executable bits being lost during Windows/Web uploads.
+- Every shell script is invoked explicitly via `bash`.
+- Full combined log plus one log per step.
+- Exit code, start/end time and duration recorded per step.
+- Failure diagnostics include log tail, git status, disk, memory and limits.
+- Final artifact includes `summary.txt`, `summary.json`, `full-build.log`, all step logs, diagnostics and status files.
