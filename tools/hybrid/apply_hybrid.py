@@ -241,7 +241,8 @@ func NewProtocolMacOSLike(s *stack.Stack) stack.TransportProtocol {
 }
 
 func (p *protocol) newIPv6FlowLabel() uint32 {
-\treturn p.stack.SecureRNG().Uint32() & 0x000fffff
+\trng := p.stack.SecureRNG()
+\treturn rng.Uint32() & 0x000fffff
 }
 """,
         "TCP profile constructors",
@@ -439,7 +440,8 @@ def patch_udp_protocol(root: pathlib.Path) -> None:
 }
 
 func (p *protocol) newIPv6FlowLabel() uint32 {
-\treturn p.stack.SecureRNG().Uint32() & 0x000fffff
+\trng := p.stack.SecureRNG()
+\treturn rng.Uint32() & 0x000fffff
 }
 """,
         "UDP combined profile fields",
@@ -716,11 +718,11 @@ def verify(root: pathlib.Path) -> None:
     checks = {
         "adapter/outbound/wireguard.go": ["network-profile", "defaultWireGuardMTU", "mtu = defaultWireGuardMTU(profile)"],
         "vendor/github.com/metacubex/sing-wireguard/device_stack.go": ["type NetworkProfile uint8", "NetworkProfileMacOS", "NetworkProfileLinux", "NetworkProfileAndroid", "NewStackDeviceWithProfile", "SetPortRange(49152, 65535)", "SetPortRange(32768, 60999)"],
-        "vendor/github.com/metacubex/gvisor/pkg/tcpip/transport/tcp/protocol.go": ["macOSLike", "linuxLike", "NewProtocolMacOSLike", "NewProtocolLinuxLike"],
+        "vendor/github.com/metacubex/gvisor/pkg/tcpip/transport/tcp/protocol.go": ["macOSLike", "linuxLike", "NewProtocolMacOSLike", "NewProtocolLinuxLike", "rng := p.stack.SecureRNG()"],
         "vendor/github.com/metacubex/gvisor/pkg/tcpip/transport/tcp/connect.go": ["makeDarwinSynOptions", "tf.enforceLocalMTU = true", "e.protocol.macOSLike"],
         "vendor/github.com/metacubex/gvisor/pkg/tcpip/network/ipv4/ipv4.go": ["EnforceLocalMTU", "params.IPv4IDSet"],
         "vendor/github.com/metacubex/gvisor/pkg/tcpip/network/ipv6/ipv6.go": ["NewProtocolAndroidLike", "sipHash24", "EnforceLocalMTU", "FlowLabel:"],
-        "vendor/github.com/metacubex/gvisor/pkg/tcpip/transport/udp/protocol.go": ["NewProtocolMacOSLike", "NewProtocolLinuxLike"],
+        "vendor/github.com/metacubex/gvisor/pkg/tcpip/transport/udp/protocol.go": ["NewProtocolMacOSLike", "NewProtocolLinuxLike", "rng := p.stack.SecureRNG()"],
         "vendor/github.com/metacubex/gvisor/pkg/tcpip/transport/internal/network/endpoint.go": ["SetIPv6FlowLabel", "SetLinuxLike", "enforceLocalMTU"],
     }
     for rel, needles in checks.items():
@@ -728,6 +730,13 @@ def verify(root: pathlib.Path) -> None:
         for needle in needles:
             if needle not in text:
                 raise RuntimeError(f"verify failed: {rel} missing {needle!r}")
+
+    for rel in (
+        "vendor/github.com/metacubex/gvisor/pkg/tcpip/transport/tcp/protocol.go",
+        "vendor/github.com/metacubex/gvisor/pkg/tcpip/transport/udp/protocol.go",
+    ):
+        if "SecureRNG().Uint32()" in read(root / rel):
+            raise RuntimeError(f"verify failed: {rel} calls pointer method on non-addressable SecureRNG temporary")
 
 
 def main() -> int:
