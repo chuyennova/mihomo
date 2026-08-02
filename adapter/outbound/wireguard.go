@@ -42,12 +42,18 @@ type WireGuard struct {
 	tunDevice wireguard.Device
 	resolver  resolver.Resolver
 
-	initOk        atomic.Bool
-	initMutex     sync.Mutex
-	initErr       error
-	option        WireGuardOption
-	connectAddr   M.Socksaddr
-	localPrefixes []netip.Prefix
+	initOk         atomic.Bool
+	closed         atomic.Bool
+	initMutex      sync.Mutex
+	initErr        error // permanent until profile reload (for example invalid IPC configuration)
+	deviceErr      error // transient Wintun creation error, retried with per-outbound backoff
+	deviceRetryAt  time.Time
+	deviceBackoff  time.Duration
+	option         WireGuardOption
+	connectAddr    M.Socksaddr
+	localPrefixes  []netip.Prefix
+	mtu            uint32
+	networkProfile string
 
 	serverAddrMap   map[M.Socksaddr]netip.AddrPort
 	serverAddrTime  atomic.TypedValue[time.Time]
@@ -63,6 +69,7 @@ type WireGuardOption struct {
 	PrivateKey          string `proxy:"private-key"`
 	Workers             int    `proxy:"workers,omitempty"`
 	MTU                 int    `proxy:"mtu,omitempty"`
+	NetworkProfile      string `proxy:"network-profile,omitempty"`
 	UDP                 bool   `proxy:"udp,omitempty"`
 	PersistentKeepalive int    `proxy:"persistent-keepalive,omitempty"`
 
@@ -164,7 +171,41 @@ func (option WireGuardOption) Prefixes() ([]netip.Prefix, error) {
 	return localPrefixes, nil
 }
 
+const (
+	wireGuardProfileWindows = "windows"
+	wireGuardProfileMacOS   = "macos"
+	wireGuardProfileLinux   = "linux"
+	wireGuardProfileAndroid = "android"
+)
+
+func normalizeWireGuardNetworkProfile(profile string) (string, error) {
+	switch strings.ToLower(strings.TrimSpace(profile)) {
+	case "", wireGuardProfileWindows:
+		return wireGuardProfileWindows, nil
+	case wireGuardProfileMacOS:
+		return wireGuardProfileMacOS, nil
+	case wireGuardProfileLinux:
+		return wireGuardProfileLinux, nil
+	case wireGuardProfileAndroid:
+		return wireGuardProfileAndroid, nil
+	default:
+		return "", E.New("invalid network-profile ", profile, "; expected windows, macos, linux or android")
+	}
+}
+
+func defaultWireGuardMTU(profile string) int {
+	if profile == wireGuardProfileAndroid {
+		return 1360
+	}
+	return 1408
+}
+
 func NewWireGuard(option WireGuardOption) (*WireGuard, error) {
+	profile, err := normalizeWireGuardNetworkProfile(option.NetworkProfile)
+	if err != nil {
+		return nil, err
+	}
+	option.NetworkProfile = profile
 	outbound := &WireGuard{
 		Base: NewBase(BaseOption{
 			Name:         option.Name,
@@ -198,7 +239,6 @@ func NewWireGuard(option WireGuardOption) (*WireGuard, error) {
 	}
 	outbound.bind = wireguard.NewClientBind(context.Background(), wgSingErrorHandler{outbound.Name()}, singDialer, isConnect, outbound.connectAddr.AddrPort(), reserved)
 
-	var err error
 	outbound.localPrefixes, err = option.Prefixes()
 	if err != nil {
 		return nil, err
@@ -256,32 +296,21 @@ func NewWireGuard(option WireGuardOption) (*WireGuard, error) {
 		}
 	}
 	outbound.option = option
+	outbound.networkProfile = profile
 
 	mtu := option.MTU
 	if mtu == 0 {
-		mtu = 1408
+		mtu = defaultWireGuardMTU(profile)
 	}
 	if len(outbound.localPrefixes) == 0 {
 		return nil, E.New("missing local address")
 	}
-	outbound.tunDevice, err = wireguard.NewStackDevice(outbound.localPrefixes, uint32(mtu))
-	if err != nil {
-		return nil, E.Cause(err, "create WireGuard device")
-	}
-	logger := &device.Logger{
-		Verbosef: func(format string, args ...interface{}) {
-			log.SingLogger.Debug(fmt.Sprintf("[WG](%s) %s", option.Name, fmt.Sprintf(format, args...)))
-		},
-		Errorf: func(format string, args ...interface{}) {
-			log.SingLogger.Error(fmt.Sprintf("[WG](%s) %s", option.Name, fmt.Sprintf(format, args...)))
-		},
-	}
-	if option.AmneziaWGOption != nil {
-		outbound.bind.SetParseReserved(false) // AmneziaWG don't need parse reserved
-		outbound.device = amnezia.NewDevice(outbound.tunDevice, outbound.bind, logger, option.Workers)
-	} else {
-		outbound.device = device.NewDevice(outbound.tunDevice, outbound.bind, logger, option.Workers)
-	}
+	// Defer Wintun/WireGuard device creation until the first real connection.
+	// Clash Verge validates profiles with `mihomo -t` in a normal user process.
+	// Creating a Wintun adapter while merely parsing the configuration makes
+	// validation fail with ERROR_ACCESS_DENIED. Lazy creation keeps `-t`
+	// side-effect free, while the elevated runtime/service creates the adapter.
+	outbound.mtu = uint32(mtu)
 
 	var has6 bool
 	for _, address := range outbound.localPrefixes {
@@ -308,6 +337,81 @@ func NewWireGuard(option WireGuardOption) (*WireGuard, error) {
 	return outbound, nil
 }
 
+const (
+	wireGuardDeviceRetryMin = time.Second
+	wireGuardDeviceRetryMax = 30 * time.Second
+)
+
+// ensureDeviceLocked lazily creates only this outbound's selected network
+// stack and WireGuard device. The caller must hold initMutex. No global lock
+// or shared device is used, so one profile cannot affect another outbound.
+func (w *WireGuard) ensureDeviceLocked() error {
+	if w.closed.Load() {
+		return net.ErrClosed
+	}
+	if w.tunDevice != nil && w.device != nil {
+		return nil
+	}
+
+	now := time.Now()
+	if w.deviceErr != nil && now.Before(w.deviceRetryAt) {
+		return w.deviceErr
+	}
+
+	tunDevice, err := newWireGuardTunDevice(w.option, w.localPrefixes, w.mtu)
+	if err != nil {
+		w.deviceErr = E.Cause(err, "create WireGuard device")
+		if w.deviceBackoff == 0 {
+			w.deviceBackoff = wireGuardDeviceRetryMin
+		} else {
+			w.deviceBackoff *= 2
+			if w.deviceBackoff > wireGuardDeviceRetryMax {
+				w.deviceBackoff = wireGuardDeviceRetryMax
+			}
+		}
+		w.deviceRetryAt = now.Add(w.deviceBackoff)
+		return w.deviceErr
+	}
+
+	logger := &device.Logger{
+		Verbosef: func(format string, args ...interface{}) {
+			log.SingLogger.Debug(fmt.Sprintf("[WG](%s) %s", w.option.Name, fmt.Sprintf(format, args...)))
+		},
+		Errorf: func(format string, args ...interface{}) {
+			log.SingLogger.Error(fmt.Sprintf("[WG](%s) %s", w.option.Name, fmt.Sprintf(format, args...)))
+		},
+	}
+
+	w.tunDevice = tunDevice
+	if w.option.AmneziaWGOption != nil {
+		w.bind.SetParseReserved(false) // AmneziaWG doesn't need reserved parsing.
+		w.device = amnezia.NewDevice(w.tunDevice, w.bind, logger, w.option.Workers)
+	} else {
+		w.device = device.NewDevice(w.tunDevice, w.bind, logger, w.option.Workers)
+	}
+	w.deviceErr = nil
+	w.deviceRetryAt = time.Time{}
+	w.deviceBackoff = 0
+	return nil
+}
+
+// closeDeviceLocked closes only this outbound's device. device.Close also
+// closes the underlying TUN; the direct TUN close is only a partial-init guard.
+func (w *WireGuard) closeDeviceLocked() error {
+	if w.device != nil {
+		w.device.Close()
+		w.device = nil
+		w.tunDevice = nil
+		return nil
+	}
+	if w.tunDevice != nil {
+		err := w.tunDevice.Close()
+		w.tunDevice = nil
+		return err
+	}
+	return nil
+}
+
 func (w *WireGuard) resolve(ctx context.Context, address M.Socksaddr) (netip.AddrPort, error) {
 	if address.Addr.IsValid() {
 		return address.AddrPort(), nil
@@ -331,12 +435,20 @@ func (w *WireGuard) init(ctx context.Context) error {
 }
 
 func (w *WireGuard) init0(ctx context.Context) error {
+	if w.closed.Load() {
+		return net.ErrClosed
+	}
 	if w.initOk.Load() {
 		return nil
 	}
 	w.initMutex.Lock()
 	defer w.initMutex.Unlock()
-	// double check like sync.Once
+	// Double check after taking this outbound's private lock. Concurrent first
+	// requests for the same port share one creation; other WireGuard outbounds
+	// use different locks and continue independently.
+	if w.closed.Load() {
+		return net.ErrClosed
+	}
 	if w.initOk.Load() {
 		return nil
 	}
@@ -356,16 +468,25 @@ func (w *WireGuard) init0(ctx context.Context) error {
 	if debug.Enabled {
 		log.SingLogger.Trace(fmt.Sprintf("[WG](%s) created wireguard ipc conf: \n %s", w.option.Name, ipcConf))
 	}
+
+	if err = w.ensureDeviceLocked(); err != nil {
+		// Device creation failures are runtime-local and may be temporary. Do not
+		// poison this outbound permanently and never touch another outbound.
+		return err
+	}
+
 	err = w.device.IpcSet(ipcConf)
 	if err != nil {
 		w.initErr = E.Cause(err, "setup wireguard")
+		_ = w.closeDeviceLocked()
 		return w.initErr
 	}
 	w.serverAddrTime.Store(time.Now())
 
 	err = w.tunDevice.Start()
 	if err != nil {
-		w.initErr = err
+		w.initErr = E.Cause(err, "start wireguard device")
+		_ = w.closeDeviceLocked()
 		return w.initErr
 	}
 
@@ -542,12 +663,15 @@ func (w *WireGuard) genIpcConf(ctx context.Context, updateOnly bool) (string, er
 	return ipcConf, nil
 }
 
-// Close implements C.ProxyAdapter
+// Close implements C.ProxyAdapter.
 func (w *WireGuard) Close() error {
-	if w.device != nil {
-		w.device.Close()
+	w.initMutex.Lock()
+	defer w.initMutex.Unlock()
+	if w.closed.Swap(true) {
+		return nil
 	}
-	return nil
+	w.initOk.Store(false)
+	return w.closeDeviceLocked()
 }
 
 func (w *WireGuard) DialContext(ctx context.Context, metadata *C.Metadata) (_ C.Conn, err error) {
