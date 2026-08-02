@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.1.1
+
+- Sửa false-error annotation: chạy `sha256sum --check --status` thay vì in các dòng `file: OK` bị Go problem matcher nhận nhầm là lỗi.
+- Nâng `actions/checkout` và `actions/upload-artifact` lên runtime Node.js 24.
+- Giữ nguyên toàn bộ patch Android-like v1.1.0; không thay đổi fingerprint IPv4/IPv6.
+
 ## v1.1.0
 
 - Giảm phạm vi patch: không tạo TCP/UDP protocol Android riêng khi gVisor mặc định đã đúng mục tiêu IPv4.

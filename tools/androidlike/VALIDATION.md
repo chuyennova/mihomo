@@ -11,3 +11,9 @@ Workflow chỉ tạo artifact khi qua tất cả bước:
 7. Compile package outbound của Mihomo.
 8. Build đầy đủ Windows amd64 `GOAMD64=v2`.
 9. Kiểm tra SHA-256 Wintun chính thức trước khi đóng gói.
+
+## Workflow hygiene v1.1.1
+
+- Kiểm tra SHA vẫn fail-closed nhưng chạy ở chế độ im lặng khi thành công, tránh annotation đỏ giả.
+- Checkout và upload artifact dùng action Node.js 24.
+- Artifact chỉ được tải lên sau khi unit test, compile gate và build Windows hoàn tất.
