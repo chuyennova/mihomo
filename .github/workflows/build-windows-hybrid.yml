@@ -1,0 +1,132 @@
+name: Build Windows Hybrid WireGuard Profiles
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["hybrid-v1.19.29"]
+    paths:
+      - "adapter/outbound/wireguard*.go"
+      - "tools/hybrid/**"
+      - "go.mod"
+      - "go.sum"
+      - ".github/workflows/build-windows-hybrid.yml"
+
+concurrency:
+  group: hybrid-v1.19.29-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  UPSTREAM_TAG: v1.19.29
+  PATCH_REVISION: hybrid-4profiles-v1
+  GOTOOLCHAIN: local
+  GOFLAGS: -mod=vendor
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Initialize logs
+        shell: bash
+        run: |
+          : > full-build.log
+          mkdir -p .ci-status dist logs
+          {
+            echo "upstream_tag=$UPSTREAM_TAG"
+            echo "patch_revision=$PATCH_REVISION"
+            echo "commit_sha=$GITHUB_SHA"
+            echo "build_date_utc=$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+            echo "workflow_run_id=$GITHUB_RUN_ID"
+            echo "workflow_run_url=$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          } | tee -a full-build.log
+
+      - name: Set up Go 1.26
+        uses: actions/setup-go@v6
+        with:
+          go-download-base-url: https://github.com/MetaCubeX/go/releases/download/build
+          go-version: "1.26"
+          cache: true
+
+      - name: Install tools
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ca-certificates curl unzip zip
+          sudo update-ca-certificates
+
+      - name: Verify locked source
+        shell: bash
+        run: tools/hybrid/ci_run.sh source-verify tools/hybrid/steps/source_verify.sh
+
+      - name: Vendor dependencies
+        shell: bash
+        run: tools/hybrid/ci_run.sh vendor tools/hybrid/steps/vendor.sh
+
+      - name: Apply hybrid dependency patch
+        shell: bash
+        run: tools/hybrid/ci_run.sh apply-patch python3 tools/hybrid/apply_hybrid.py --root .
+
+      - name: Gofmt patched files
+        shell: bash
+        run: tools/hybrid/ci_run.sh gofmt tools/hybrid/steps/gofmt.sh
+
+      - name: Verify hybrid patch
+        shell: bash
+        run: tools/hybrid/ci_run.sh verify python3 tools/hybrid/apply_hybrid.py --root . --verify-only
+
+      - name: Targeted tests
+        shell: bash
+        run: tools/hybrid/ci_run.sh tests tools/hybrid/steps/tests.sh
+
+      - name: Compile verge-mihomo.exe
+        shell: bash
+        env:
+          CGO_ENABLED: "0"
+          GOOS: windows
+          GOARCH: amd64
+          GOAMD64: v2
+        run: tools/hybrid/ci_run.sh compile tools/hybrid/steps/compile.sh
+
+      - name: Download Wintun runtime
+        shell: bash
+        run: tools/hybrid/ci_run.sh wintun tools/hybrid/steps/wintun.sh
+
+      - name: Package binary
+        shell: bash
+        run: tools/hybrid/ci_run.sh package tools/hybrid/steps/package.sh
+
+      - name: Finalize logs
+        if: always()
+        shell: bash
+        run: tools/hybrid/finalize_logs.sh
+
+      - name: Upload build logs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: hybrid-build-logs-${{ github.run_id }}
+          path: |
+            summary.txt
+            full-build.log
+            dist/hybrid-build-logs.zip
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Upload hybrid binary
+        if: success()
+        uses: actions/upload-artifact@v7
+        with:
+          name: verge-mihomo-v1.19.29-hybrid-windows-amd64-v2
+          path: |
+            dist/verge-mihomo.exe
+            dist/wintun.dll
+            dist/LICENSE-wintun.txt
+            dist/SHA256SUMS.txt
+            dist/verge-mihomo-v1.19.29-hybrid-windows-amd64-v2.zip
+          if-no-files-found: error
+          retention-days: 30
