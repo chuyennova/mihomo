@@ -1,0 +1,35 @@
+proxies:
+  - name: WG-ANDROID-01
+    type: wireguard
+    server: 203.0.113.10
+    port: 51820
+    ip: 10.0.0.2/32
+    ipv6: 2001:db8:1::2/128
+    private-key: REPLACE_ME
+    public-key: REPLACE_ME
+    udp: true
+
+  - name: WG-ANDROID-02
+    type: wireguard
+    server: 203.0.113.20
+    port: 51820
+    ip: 10.0.1.2/32
+    ipv6: 2001:db8:2::2/128
+    private-key: REPLACE_ME
+    public-key: REPLACE_ME
+    udp: true
+
+listeners:
+  - name: SOCKS-ANDROID-01
+    type: socks
+    listen: 127.0.0.1
+    port: 10881
+    udp: true
+    proxy: WG-ANDROID-01
+
+  - name: SOCKS-ANDROID-02
+    type: socks
+    listen: 127.0.0.1
+    port: 10882
+    udp: true
+    proxy: WG-ANDROID-02
