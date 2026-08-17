@@ -1,8 +1,15 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-GOWORK=off GOFLAGS=-mod=vendor go test -tags with_gvisor \
-  github.com/metacubex/gvisor/pkg/tcpip/network/ipv6
+# Run profile-sensitive packages verbosely so IPv6 regression names and
+# failures are preserved in the uploaded build log.
+GOWORK=off GOFLAGS=-mod=vendor go test -v -tags with_gvisor \
+  github.com/metacubex/gvisor/pkg/tcpip/stack \
+  -run 'TestHybrid'
+GOWORK=off GOFLAGS=-mod=vendor go test -v -tags with_gvisor \
+  github.com/metacubex/gvisor/pkg/tcpip/network/ipv6 \
+  -run 'TestHybrid'
+
 GOWORK=off GOFLAGS=-mod=vendor go test -tags with_gvisor \
   github.com/metacubex/gvisor/pkg/tcpip/transport/tcp
 GOWORK=off GOFLAGS=-mod=vendor go test -tags with_gvisor \

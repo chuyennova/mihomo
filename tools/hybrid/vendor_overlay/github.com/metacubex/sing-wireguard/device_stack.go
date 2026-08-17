@@ -72,6 +72,7 @@ func NewStackDeviceWithProfile(localAddresses []netip.Prefix, mtu uint32, profil
 		tcpProtocol = tcp.NewProtocolMacOSLike
 		udpProtocol = udp.NewProtocolMacOSLike
 	case NetworkProfileLinux:
+		ipv6Protocol = ipv6.NewProtocolLinuxLike
 		tcpProtocol = tcp.NewProtocolLinuxLike
 		udpProtocol = udp.NewProtocolLinuxLike
 	case NetworkProfileAndroid:

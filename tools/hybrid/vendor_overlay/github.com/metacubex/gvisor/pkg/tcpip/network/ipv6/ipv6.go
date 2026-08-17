@@ -16,10 +16,8 @@
 package ipv6
 
 import (
-	"encoding/binary"
 	"fmt"
 	"math"
-	"math/bits"
 	"reflect"
 	"sort"
 	"time"
@@ -59,8 +57,7 @@ const (
 	// Netstack.
 	DefaultTTL = 64
 
-	ipv6FlowLabelMask          = 0x000fffff
-	ipv6FlowLabelStatelessFlag = 0x00080000
+	ipv6FlowLabelMask = 0x000fffff
 
 	// buckets for fragment identifiers
 	buckets = 2048
@@ -70,52 +67,6 @@ const (
 	forwardingDisabled = 0
 	forwardingEnabled  = 1
 )
-
-func sipRound(v0, v1, v2, v3 *uint64) {
-	*v0 += *v1
-	*v1 = bits.RotateLeft64(*v1, 13)
-	*v1 ^= *v0
-	*v0 = bits.RotateLeft64(*v0, 32)
-	*v2 += *v3
-	*v3 = bits.RotateLeft64(*v3, 16)
-	*v3 ^= *v2
-	*v0 += *v3
-	*v3 = bits.RotateLeft64(*v3, 21)
-	*v3 ^= *v0
-	*v2 += *v1
-	*v1 = bits.RotateLeft64(*v1, 17)
-	*v1 ^= *v2
-	*v2 = bits.RotateLeft64(*v2, 32)
-}
-
-func sipHash24(k0, k1 uint64, data []byte) uint64 {
-	v0 := k0 ^ 0x736f6d6570736575
-	v1 := k1 ^ 0x646f72616e646f6d
-	v2 := k0 ^ 0x6c7967656e657261
-	v3 := k1 ^ 0x7465646279746573
-	originalLength := len(data)
-	for len(data) >= 8 {
-		m := binary.LittleEndian.Uint64(data[:8])
-		v3 ^= m
-		sipRound(&v0, &v1, &v2, &v3)
-		sipRound(&v0, &v1, &v2, &v3)
-		v0 ^= m
-		data = data[8:]
-	}
-	b := uint64(originalLength) << 56
-	for i, value := range data {
-		b |= uint64(value) << (8 * i)
-	}
-	v3 ^= b
-	sipRound(&v0, &v1, &v2, &v3)
-	sipRound(&v0, &v1, &v2, &v3)
-	v0 ^= b
-	v2 ^= 0xff
-	for i := 0; i < 4; i++ {
-		sipRound(&v0, &v1, &v2, &v3)
-	}
-	return v0 ^ v1 ^ v2 ^ v3
-}
 
 // policyTable is the default policy table defined in RFC 6724 section 2.1.
 //
@@ -871,7 +822,7 @@ func (e *endpoint) handleFragments(r *stack.Route, networkMTU uint32, pkt *stack
 // WritePacket writes a packet to the given destination address and protocol.
 func (e *endpoint) WritePacket(r *stack.Route, params stack.NetworkHeaderParams, pkt *stack.PacketBuffer) tcpip.Error {
 	dstAddr := r.RemoteAddress()
-	if e.protocol.androidLike && params.IPv6FlowLabel == 0 {
+	if (e.protocol.linuxLike || e.protocol.androidLike) && params.IPv6FlowLabel == 0 {
 		params.IPv6FlowLabel = e.protocol.autoFlowLabel(r.LocalAddress(), dstAddr, params.Protocol, pkt.TransportHeader().Slice())
 	}
 	if err := addIPHeader(r.LocalAddress(), dstAddr, pkt, params, nil /* extensionHeaders */); err != nil {
@@ -2425,10 +2376,10 @@ type protocolMu struct {
 
 // +stateify savable
 type protocol struct {
-	stack        *stack.Stack
-	options      Options
-	androidLike  bool      `state:"nosave"`
-	flowLabelKey [2]uint64 `state:"nosave"`
+	stack       *stack.Stack
+	options     Options
+	linuxLike   bool `state:"nosave"`
+	androidLike bool `state:"nosave"`
 
 	mu protocolMu
 
@@ -2443,26 +2394,18 @@ type protocol struct {
 }
 
 func (p *protocol) autoFlowLabel(src, dst tcpip.Address, proto tcpip.TransportProtocolNumber, transportHeader []byte) uint32 {
-	var flow [56]byte
-	n := copy(flow[:], src.AsSlice())
-	n += copy(flow[n:], dst.AsSlice())
-	flow[n] = byte(proto)
-	n++
+	var localPort, remotePort uint16
 	switch proto {
 	case header.TCPProtocolNumber, header.UDPProtocolNumber:
 		if len(transportHeader) >= 4 {
-			n += copy(flow[n:], transportHeader[:4])
-		}
-	case header.ICMPv6ProtocolNumber:
-		if len(transportHeader) >= 2 {
-			n += copy(flow[n:], transportHeader[:2])
-		}
-		if len(transportHeader) >= 6 {
-			n += copy(flow[n:], transportHeader[4:6])
+			localPort = uint16(transportHeader[0])<<8 | uint16(transportHeader[1])
+			remotePort = uint16(transportHeader[2])<<8 | uint16(transportHeader[3])
 		}
 	}
-	hash := uint32(sipHash24(p.flowLabelKey[0], p.flowLabelKey[1], flow[:n]))
-	return (bits.RotateLeft32(hash, 16) & ipv6FlowLabelMask) | ipv6FlowLabelStatelessFlag
+	// Linux ip6_make_flowlabel() hashes flowi6. For ICMPv6 and other
+	// non-port protocols, fl6_sport/fl6_dport are zero, so source/destination
+	// addresses plus protocol form the automatic label input.
+	return p.stack.KernelLikeIPv6FlowLabel(src, dst, localPort, remotePort, proto)
 }
 
 // Number returns the ipv6 protocol number.
@@ -2914,22 +2857,21 @@ type Options struct {
 
 // NewProtocolWithOptions returns an IPv6 network protocol.
 func NewProtocolWithOptions(opts Options) stack.NetworkProtocolFactory {
-	return newProtocolWithOptions(opts, false)
+	return newProtocolWithOptions(opts, false, false)
+}
+
+func NewProtocolLinuxLike(s *stack.Stack) stack.NetworkProtocol {
+	return newProtocolWithOptions(Options{}, true, false)(s)
 }
 
 func NewProtocolAndroidLike(s *stack.Stack) stack.NetworkProtocol {
-	return newProtocolWithOptions(Options{}, true)(s)
+	return newProtocolWithOptions(Options{}, false, true)(s)
 }
 
-func newProtocolWithOptions(opts Options, androidLike bool) stack.NetworkProtocolFactory {
+func newProtocolWithOptions(opts Options, linuxLike, androidLike bool) stack.NetworkProtocolFactory {
 	opts.NDPConfigs.validate()
 	return func(s *stack.Stack) stack.NetworkProtocol {
-		p := &protocol{stack: s, options: opts, androidLike: androidLike}
-		if androidLike {
-			rng := s.SecureRNG()
-			p.flowLabelKey[0] = rng.Uint64()
-			p.flowLabelKey[1] = rng.Uint64()
-		}
+		p := &protocol{stack: s, options: opts, linuxLike: linuxLike, androidLike: androidLike}
 		p.fragmentation = fragmentation.NewFragmentation(header.IPv6FragmentExtHdrFragmentOffsetBytesPerUnit, fragmentation.HighFragThreshold, fragmentation.LowFragThreshold, ReassembleTimeout, s.Clock(), p)
 		p.mu.eps = make(map[tcpip.NICID]*endpoint)
 		p.SetDefaultTTL(DefaultTTL)

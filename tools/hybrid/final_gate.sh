@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 set -uo pipefail
-required=(prepare source-tree go-environment install-tools source-verify vendor apply-vendor gofmt verify tests compile wintun package)
+required=(prepare source-tree go-environment install-tools source-verify vendor apply-vendor gofmt verify profile-audit tests compile wintun package)
 failed=0
 for step in "${required[@]}"; do
   file=".ci-status/${step}.exit"

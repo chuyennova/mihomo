@@ -1,41 +1,56 @@
-# Integration report — v1.19.30 hybrid 4 profiles
+# Integration report — Mihomo v1.19.30 hybrid 4 profiles v2
 
-## Thiết kế
+## Baseline
 
-v1.19.30 đã refactor WireGuard quanh `IPStackOption`, `ipStack`, `wireguardDevice` và `newIPStack()`. Bản port giữ lớp này làm upstream path và thêm `network-profile` như selector bên ngoài.
+- Mihomo upstream: `v1.19.30`
+- `sing-wireguard`: `110eac03c3f0`
+- gVisor: `3cc44cf9ac22`
+- MetaCubeX `wireguard-go`: `a6cecdd7f57f`
+- Native Windows WireGuard: `f333402bd9cb`
+- Wintun Go package: `windows v1.0.1`
 
-### Không có `network-profile`
+## Architecture retained from V1
 
-Đi theo `newIPStack()` của upstream với `ip-stack.mode: auto|gvisor|mips`.
+- `windows` -> native Wintun/Winsock, lazy device per outbound.
+- `macos` -> independent gVisor macOS-like stack.
+- `linux` -> independent gVisor Linux-like stack.
+- `android` -> independent gVisor Android-like stack.
+- `network-profile` is immutable per WireGuard outbound; no global selector.
+- Omitted `network-profile` preserves upstream v1.19.30 `ip-stack` behavior.
+- AmneziaWG v3 path is retained.
 
-### `windows`
+## V2 IPv6 correction
 
-Tạo Wintun lazy theo outbound, cấu hình address/route riêng và tạo socket Winsock bị ghim interface bằng `IP_UNICAST_IF`/`IPV6_UNICAST_IF`. IPv4 TCP không hard-bind `/32`; IPv6/UDP bind địa chỉ tunnel như hybrid v1.19.29 đã kiểm chứng.
+Contemporary Linux/Android common kernel automatic IPv6 Flow Label behavior is modeled as:
 
-### `macos`, `linux`, `android`
+1. Canonicalize the IPv6 endpoint tuple.
+2. Hash Linux-style flow-key data with SipHash-2-4 using a private stack key.
+3. Truncate to 32-bit flow hash, replacing zero with one.
+4. Rotate left by 16.
+5. Mask to the 20-bit IPv6 Flow Label.
+6. Do **not** forcibly OR `0x80000`; the kernel only does that when `flowlabel_state_ranges` is enabled.
 
-`sing-wireguard` mới được mở rộng bằng `NetworkProfile` immutable trên mỗi `StackDevice`. Mỗi outbound tạo stack riêng; không có biến global chọn profile.
+Linux and Android share this IPv6 kernel-like flow-label mechanism while retaining their separate IPv4/TCP/PMTU/MTU behaviors. Linux also enables the IPv6 network-profile path so ICMPv6/non-port packets do not silently fall back to the default gVisor label behavior.
 
-## Port gVisor lên commit mới
+macOS V1 IPv6 behavior is intentionally retained: Hop Limit 64 and independent 20-bit labels at TCP endpoint / UDP socket scope. No claim is made that its PRNG is bit-for-bit XNU.
 
-Không áp nguyên patch v1.19.29. Các thay đổi được rebase lên gVisor `3cc44cf9ac22` và giữ code PMTU/DF mới của upstream v1.19.30.
+Windows IPv6 remains native Windows kernel behavior through Winsock/Wintun and `IPV6_UNICAST_IF`.
 
-- macOS: Darwin SYN option order, WS/window, port range, TCP/UDP IPv6 flow label.
-- Linux: port range, PMTU/DF, per-socket IPv4 ID, MSS-aware receive window, IPv6 flow label.
-- Android: port range, Android IPv6 SipHash flow label, không cưỡng bức TCP keepalive 15/15; Android profile đặt PMTU `DONT` để không bị thay đổi thành DF-on do PMTU default mới của gVisor v1.19.30.
+## Build audit
 
-## Lifecycle
+V2 adds a mandatory `profile-audit` CI step. It records:
 
-Device/stack không tạo khi chỉ parse YAML. Traffic đầu tiên của từng outbound mới tạo stack/device dưới mutex riêng. Creation failure có backoff riêng 1s -> 30s. Một outbound lỗi không đổi profile hoặc đóng device của outbound khác.
+- selector mapping;
+- per-outbound lifecycle presence;
+- Windows native IPv6 interface/source binding;
+- macOS/Linux/Android profile constructors;
+- IPv6 Hop Limit 64 for gVisor profiles;
+- Linux/Android kernel-like Flow Label path;
+- absence of forced stateless-range bit;
+- executable regression vectors for SipHash / canonical tuple / 20-bit Flow Label / Hop Limit.
 
-## AmneziaWG
+The audit writes `logs/profile-audit.txt` and `.json`; final log upload remains `if: always()`.
 
-Đường lazy vẫn giữ nhánh upstream:
+## Dependency reproducibility
 
-- `Version == 3` -> `amneziav3.NewDevice`
-- version khác -> legacy `amnezia.NewDevice`
-- WireGuard thường -> `device.NewDevice`
-
-## Build
-
-Workflow tạo vendor mới từ `go.mod/go.sum`, xác minh SHA source dependency, copy vendor overlay khóa cứng, gofmt, test gVisor/sing-wireguard/adapter, cross-compile Windows và package Wintun.
+V2 freezes the exact resolved `go.mod/go.sum` produced by the successful V1 GitHub build. CI no longer runs `go mod tidy`, preventing future Go toolchains from silently rewriting the dependency graph. Vendor generation must leave both locked files byte-identical.

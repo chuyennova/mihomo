@@ -4,6 +4,11 @@ set -euo pipefail
 module_path="$(awk '$1 == "module" { print $2; exit }' go.mod)"
 test "$module_path" = "github.com/metacubex/mihomo"
 
+# v2 freezes the exact module graph from the successful v1 build.
+test "$(sha256sum go.mod | awk '{print $1}')" = "239edfc51e752756e32367abd8feef379cb8e2b94891b78a6fc0438cabd2497a"
+test "$(sha256sum go.sum | awk '{print $1}')" = "01424dfc0434d085a4ed9bab7046d1b3b1c16bea96e43a1f9ff8ebbe592f8546"
+grep -F 'go 1.25.0' go.mod
+
 # v1.19.30 dependency locks. These are intentionally different from v1.19.29.
 grep -F "github.com/metacubex/sing-wireguard v0.0.0-20260810013230-110eac03c3f0" go.mod
 grep -F "github.com/metacubex/gvisor v0.0.0-20260810011720-3cc44cf9ac22" go.mod

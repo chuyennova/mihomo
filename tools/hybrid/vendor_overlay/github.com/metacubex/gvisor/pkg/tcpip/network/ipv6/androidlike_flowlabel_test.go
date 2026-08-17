@@ -1,18 +1,15 @@
 package ipv6
 
-import (
-	"encoding/binary"
-	"testing"
-)
+import "testing"
 
-func TestHybridSipHash24Reference(t *testing.T) {
-	var key [16]byte
-	for i := range key {
-		key[i] = byte(i)
+func TestHybridIPv6DefaultHopLimit64(t *testing.T) {
+	if got, want := DefaultTTL, uint8(64); got != want {
+		t.Fatalf("IPv6 default hop limit got=%d want=%d", got, want)
 	}
-	k0 := binary.LittleEndian.Uint64(key[:8])
-	k1 := binary.LittleEndian.Uint64(key[8:])
-	if got := sipHash24(k0, k1, nil); got != 0x726fdb47dd0e0e31 {
-		t.Fatalf("got %#x", got)
+}
+
+func TestHybridIPv6FlowLabelWidth(t *testing.T) {
+	if ipv6FlowLabelMask != 0x000fffff {
+		t.Fatalf("unexpected IPv6 flow label mask %#x", ipv6FlowLabelMask)
 	}
 }

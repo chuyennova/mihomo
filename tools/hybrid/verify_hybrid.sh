@@ -32,9 +32,20 @@ grep -F 'NewProtocolAndroidLike' vendor/github.com/metacubex/gvisor/pkg/tcpip/tr
 grep -F 'makeDarwinSynOptions' vendor/github.com/metacubex/gvisor/pkg/tcpip/transport/tcp/connect.go
 grep -F 'SetLinuxLike' vendor/github.com/metacubex/gvisor/pkg/tcpip/transport/internal/network/endpoint.go
 grep -F 'SetAndroidLike' vendor/github.com/metacubex/gvisor/pkg/tcpip/transport/internal/network/endpoint.go
+grep -F 'NewProtocolLinuxLike' vendor/github.com/metacubex/gvisor/pkg/tcpip/network/ipv6/ipv6.go
 grep -F 'NewProtocolAndroidLike' vendor/github.com/metacubex/gvisor/pkg/tcpip/network/ipv6/ipv6.go
-grep -F 'sipHash24' vendor/github.com/metacubex/gvisor/pkg/tcpip/network/ipv6/ipv6.go
-grep -F 'LinuxLikeIPv6FlowLabel' vendor/github.com/metacubex/gvisor/pkg/tcpip/stack/linuxlike_flow.go
+grep -F 'KernelLikeIPv6FlowLabel' vendor/github.com/metacubex/gvisor/pkg/tcpip/stack/linuxlike_flow.go
+grep -F 'kernelSipHash24' vendor/github.com/metacubex/gvisor/pkg/tcpip/stack/linuxlike_flow.go
+grep -F 'bits.RotateLeft32(hash, 16) & kernelFlowLabelMask' vendor/github.com/metacubex/gvisor/pkg/tcpip/stack/linuxlike_flow.go
+if grep -R -nF '| 0x00080000' vendor/github.com/metacubex/gvisor/pkg/tcpip/stack/linuxlike_flow.go; then
+  echo 'forced IPv6 stateless-range flag reintroduced' >&2
+  exit 11
+fi
+if grep -R -nF 'ipv6FlowLabelStatelessFlag' vendor/github.com/metacubex/gvisor/pkg/tcpip/network/ipv6/ipv6.go; then
+  echo 'old forced IPv6 stateless flag logic reintroduced' >&2
+  exit 12
+fi
+test -f vendor/github.com/metacubex/gvisor/pkg/tcpip/stack/linuxlike_flow_test.go
 
 # Regression: pointer-receiver RNG methods must be called on an addressable RNG.
 if grep -R -nF 'SecureRNG().Uint32()' vendor/github.com/metacubex/gvisor vendor/github.com/metacubex/sing-wireguard; then
@@ -42,4 +53,4 @@ if grep -R -nF 'SecureRNG().Uint32()' vendor/github.com/metacubex/gvisor vendor/
   exit 10
 fi
 
-echo 'Hybrid v1.19.30 source verification: OK'
+echo 'Hybrid v1.19.30 v2 source verification: OK'

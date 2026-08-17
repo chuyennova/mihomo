@@ -15,6 +15,7 @@ gofmt -w \
   vendor/github.com/metacubex/gvisor/pkg/tcpip/network/ipv6/androidlike_flowlabel_test.go \
   vendor/github.com/metacubex/gvisor/pkg/tcpip/stack/registration.go \
   vendor/github.com/metacubex/gvisor/pkg/tcpip/stack/linuxlike_flow.go \
+  vendor/github.com/metacubex/gvisor/pkg/tcpip/stack/linuxlike_flow_test.go \
   vendor/github.com/metacubex/gvisor/pkg/tcpip/transport/internal/network/endpoint.go \
   vendor/github.com/metacubex/gvisor/pkg/tcpip/transport/tcp/connect.go \
   vendor/github.com/metacubex/gvisor/pkg/tcpip/transport/tcp/endpoint.go \

@@ -4,7 +4,7 @@ set +e
 set -uo pipefail
 mkdir -p logs/steps logs/diagnostics dist .ci-status
 
-steps=(prepare source-tree go-environment install-tools source-verify vendor apply-vendor gofmt verify tests compile wintun package)
+steps=(prepare source-tree go-environment install-tools source-verify vendor apply-vendor gofmt verify profile-audit tests compile wintun package)
 status_of() {
   local f=".ci-status/$1.exit"
   if [[ -f "$f" ]]; then
@@ -27,7 +27,7 @@ done
 {
   echo "Mihomo hybrid build summary"
   echo "upstream_tag=${UPSTREAM_TAG:-v1.19.30}"
-  echo "patch_revision=${PATCH_REVISION:-hybrid-4profiles-v1-v11930}"
+  echo "patch_revision=${PATCH_REVISION:-hybrid-4profiles-v2-v11930}"
   echo "commit_sha=${GITHUB_SHA:-unknown}"
   echo "build_date_utc=$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
   echo "workflow_run_id=${GITHUB_RUN_ID:-unknown}"
@@ -64,10 +64,10 @@ done
 
 python3 - <<'PY' > summary.json 2>/dev/null || true
 import json, os, pathlib
-steps = ["prepare", "source-tree", "go-environment", "install-tools", "source-verify", "vendor", "apply-vendor", "gofmt", "verify", "tests", "compile", "wintun", "package"]
+steps = ["prepare", "source-tree", "go-environment", "install-tools", "source-verify", "vendor", "apply-vendor", "gofmt", "verify", "profile-audit", "tests", "compile", "wintun", "package"]
 result = {
     "upstream_tag": os.getenv("UPSTREAM_TAG", "v1.19.30"),
-    "patch_revision": os.getenv("PATCH_REVISION", "hybrid-4profiles-v1-v11930"),
+    "patch_revision": os.getenv("PATCH_REVISION", "hybrid-4profiles-v2-v11930"),
     "commit_sha": os.getenv("GITHUB_SHA", "unknown"),
     "workflow_run_id": os.getenv("GITHUB_RUN_ID", "unknown"),
     "workflow_run_attempt": os.getenv("GITHUB_RUN_ATTEMPT", "unknown"),
@@ -109,6 +109,8 @@ cp -f full-build.log logs/full-build.log 2>/dev/null || : > logs/full-build.log
 cp -f tools/hybrid/SOURCE_LOCKS.md logs/SOURCE_LOCKS.md 2>/dev/null || true
 cp -f tools/hybrid/MANIFEST-SHA256.txt logs/MANIFEST-SHA256.txt 2>/dev/null || true
 cp -f tools/hybrid/INTEGRATION_REPORT.md logs/INTEGRATION_REPORT.md 2>/dev/null || true
+[[ -f logs/profile-audit.txt ]] && cp -f logs/profile-audit.txt logs/diagnostics/profile-audit.final.txt 2>/dev/null || true
+[[ -f logs/profile-audit.json ]] && cp -f logs/profile-audit.json logs/diagnostics/profile-audit.final.json 2>/dev/null || true
 
 rm -f dist/hybrid-build-logs.zip
 (

@@ -40,6 +40,7 @@ check_hash cb48807b2bc70d8743b43cbe26c860d36d8503cb0cf152a21680888930578afd sing
 # These are new profile-only files and must not pre-exist on the locked source.
 for rel in \
   gvisor/pkg/tcpip/stack/linuxlike_flow.go \
+  gvisor/pkg/tcpip/stack/linuxlike_flow_test.go \
   gvisor/pkg/tcpip/network/ipv6/androidlike_flowlabel_test.go; do
   if [[ -e "$VENDOR/$rel" ]]; then
     echo "unexpected pre-existing vendor file: $rel" >&2
