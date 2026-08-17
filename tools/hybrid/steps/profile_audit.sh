@@ -73,7 +73,7 @@ import json, os
 print(json.dumps({
   "schema": 2,
   "upstream": "v1.19.30",
-  "revision": "hybrid-4profiles-v2.1-v11930",
+  "revision": "hybrid-4profiles-v2.2-v11930",
   "commit": os.getenv("GITHUB_SHA", "unknown"),
   "profiles": {
     "windows": {

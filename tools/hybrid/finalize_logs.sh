@@ -27,7 +27,7 @@ done
 {
   echo "Mihomo hybrid build summary"
   echo "upstream_tag=${UPSTREAM_TAG:-v1.19.30}"
-  echo "patch_revision=${PATCH_REVISION:-hybrid-4profiles-v2.1-v11930}"
+  echo "patch_revision=${PATCH_REVISION:-hybrid-4profiles-v2.2-v11930}"
   echo "commit_sha=${GITHUB_SHA:-unknown}"
   echo "build_date_utc=$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
   echo "workflow_run_id=${GITHUB_RUN_ID:-unknown}"
@@ -67,7 +67,7 @@ import json, os, pathlib
 steps = ["prepare", "source-tree", "go-environment", "install-tools", "source-verify", "vendor", "apply-vendor", "gofmt", "verify", "profile-audit", "tests", "compile", "wintun", "package"]
 result = {
     "upstream_tag": os.getenv("UPSTREAM_TAG", "v1.19.30"),
-    "patch_revision": os.getenv("PATCH_REVISION", "hybrid-4profiles-v2.1-v11930"),
+    "patch_revision": os.getenv("PATCH_REVISION", "hybrid-4profiles-v2.2-v11930"),
     "commit_sha": os.getenv("GITHUB_SHA", "unknown"),
     "workflow_run_id": os.getenv("GITHUB_RUN_ID", "unknown"),
     "workflow_run_attempt": os.getenv("GITHUB_RUN_ATTEMPT", "unknown"),

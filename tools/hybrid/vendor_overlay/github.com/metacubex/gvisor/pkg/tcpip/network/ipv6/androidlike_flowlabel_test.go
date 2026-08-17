@@ -3,7 +3,7 @@ package ipv6
 import "testing"
 
 func TestHybridIPv6DefaultHopLimit64(t *testing.T) {
-	if got, want := DefaultTTL, uint8(64); got != want {
+	if got, want := int(DefaultTTL), 64; got != want {
 		t.Fatalf("IPv6 default hop limit got=%d want=%d", got, want)
 	}
 }

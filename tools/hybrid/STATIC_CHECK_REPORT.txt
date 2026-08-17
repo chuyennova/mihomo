@@ -1,4 +1,4 @@
-Mihomo v1.19.30 hybrid 4 profiles V2 - static/dry-run verification
+Mihomo v1.19.30 hybrid 4 profiles V2.2 - static/dry-run verification
 ===================================================================
 
 Purpose
@@ -77,3 +77,8 @@ compile, Wintun packaging and final quality gate.
 Runtime packet capture remains the final proof of wire-visible IPv6 behavior.
 The CI audit proves code-path selection and deterministic algorithm properties;
 it cannot observe changes made later by a WireGuard peer, NAT, router or ISP.
+
+V2.2 regression-test compile fix
+-------------------------------
+[OK] IPv6 DefaultTTL test now normalizes DefaultTTL with int(DefaultTTL) before comparing with 64; this fixes the V2.1 int-vs-uint8 compile error.
+[OK] Production hybrid/profile Go files are unchanged from V2.1.
