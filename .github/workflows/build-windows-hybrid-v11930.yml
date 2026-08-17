@@ -1,0 +1,174 @@
+name: Build Windows Hybrid WireGuard Profiles v1.19.30 v1
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["hybrid-v1.19.30"]
+    paths:
+      - "adapter/outbound/wireguard*.go"
+      - "tools/hybrid/**"
+      - "go.mod"
+      - "go.sum"
+      - ".github/workflows/build-windows-hybrid-v11930.yml"
+
+concurrency:
+  group: hybrid-v1.19.30-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  UPSTREAM_TAG: v1.19.30
+  PATCH_REVISION: hybrid-4profiles-v1-v11930
+  GOTOOLCHAIN: local
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
+
+      - name: Prepare scripts and initialize diagnostics
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          mkdir -p .ci-status logs/steps logs/diagnostics dist
+          : > full-build.log
+          {
+            echo "===== HYBRID BUILD START ====="
+            echo "upstream_tag=$UPSTREAM_TAG"
+            echo "patch_revision=$PATCH_REVISION"
+            echo "repository=$GITHUB_REPOSITORY"
+            echo "ref=$GITHUB_REF"
+            echo "commit_sha=$GITHUB_SHA"
+            echo "run_attempt=$GITHUB_RUN_ATTEMPT"
+            echo "workflow_run_id=$GITHUB_RUN_ID"
+            echo "workflow_run_url=$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+            echo "runner_os=$RUNNER_OS"
+            echo "runner_arch=$RUNNER_ARCH"
+            echo "workspace=$GITHUB_WORKSPACE"
+            echo "build_date_utc=$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+            echo "shell=$(bash --version | head -n1)"
+            echo "pwd=$(pwd)"
+            echo "git=$(git --version)"
+            echo "disk_before=$(df -h . | tail -n1)"
+            echo "===== END INITIAL METADATA ====="
+          } | tee -a full-build.log
+          printf '0\n' > .ci-status/prepare.exit
+
+      - name: Record source tree before build
+        shell: bash
+        run: bash tools/hybrid/ci_run.sh source-tree bash tools/hybrid/steps/environment.sh before-go
+
+      - name: Set up Go 1.26
+        id: setup_go
+        uses: actions/setup-go@v6
+        with:
+          go-download-base-url: https://github.com/MetaCubeX/go/releases/download/build
+          go-version: "1.26"
+          cache: true
+
+      - name: Record Go environment
+        if: always()
+        shell: bash
+        run: bash tools/hybrid/ci_run.sh go-environment bash tools/hybrid/steps/environment.sh after-go
+
+      - name: Install tools
+        shell: bash
+        run: bash tools/hybrid/ci_run.sh install-tools bash tools/hybrid/steps/install_tools.sh
+
+      - name: Verify v1.19.30 hybrid source
+        shell: bash
+        run: bash tools/hybrid/ci_run.sh source-verify bash tools/hybrid/steps/source_verify.sh
+
+      - name: Vendor v1.19.30 dependencies
+        shell: bash
+        run: bash tools/hybrid/ci_run.sh vendor bash tools/hybrid/steps/vendor.sh
+
+      - name: Apply locked four-profile vendor overlay
+        shell: bash
+        run: bash tools/hybrid/ci_run.sh apply-vendor bash tools/hybrid/apply_vendor_overlay.sh .
+
+      - name: Gofmt patched files
+        shell: bash
+        run: bash tools/hybrid/ci_run.sh gofmt bash tools/hybrid/steps/gofmt.sh
+
+      - name: Verify hybrid integration
+        shell: bash
+        run: bash tools/hybrid/ci_run.sh verify bash tools/hybrid/verify_hybrid.sh
+
+      - name: Targeted tests
+        id: tests
+        continue-on-error: true
+        shell: bash
+        run: bash tools/hybrid/ci_run.sh tests bash tools/hybrid/steps/tests.sh
+
+      - name: Compile verge-mihomo.exe
+        id: compile
+        if: always()
+        continue-on-error: true
+        shell: bash
+        env:
+          CGO_ENABLED: "0"
+          GOOS: windows
+          GOARCH: amd64
+          GOAMD64: v2
+        run: bash tools/hybrid/ci_run.sh compile bash tools/hybrid/steps/compile.sh
+
+      - name: Download Wintun runtime
+        id: wintun
+        if: always() && steps.compile.outcome == 'success'
+        continue-on-error: true
+        shell: bash
+        run: bash tools/hybrid/ci_run.sh wintun bash tools/hybrid/steps/wintun.sh
+
+      - name: Package binary
+        id: package
+        if: always() && steps.compile.outcome == 'success' && steps.wintun.outcome == 'success'
+        continue-on-error: true
+        shell: bash
+        run: bash tools/hybrid/ci_run.sh package bash tools/hybrid/steps/package.sh
+
+      - name: Finalize all logs
+        if: always()
+        continue-on-error: true
+        shell: bash
+        run: bash tools/hybrid/finalize_logs.sh
+
+      - name: Upload complete build diagnostics
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: hybrid-v1.19.30-build-logs-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          path: |
+            summary.txt
+            summary.json
+            full-build.log
+            logs/
+            .ci-status/
+            dist/hybrid-build-logs.zip
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Upload hybrid binary
+        if: always() && steps.tests.outcome == 'success' && steps.compile.outcome == 'success' && steps.wintun.outcome == 'success' && steps.package.outcome == 'success'
+        uses: actions/upload-artifact@v7
+        with:
+          name: verge-mihomo-v1.19.30-hybrid-windows-amd64-v1
+          path: |
+            dist/verge-mihomo.exe
+            dist/wintun.dll
+            dist/LICENSE-wintun.txt
+            dist/SHA256SUMS.txt
+            dist/verge-mihomo-v1.19.30-hybrid-windows-amd64-v1.zip
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Final quality gate
+        if: always()
+        shell: bash
+        run: bash tools/hybrid/final_gate.sh
