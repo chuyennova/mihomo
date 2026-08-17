@@ -50,7 +50,7 @@ Không khai báo `network-profile` thì giữ nguyên `ip-stack: auto|gvisor|mip
 1. Dùng branch `hybrid-v1.19.30`.
 2. Chép đè toàn bộ nội dung ZIP overlay này vào root branch.
 3. Commit.
-4. Vào **Actions** -> **Build Windows Hybrid WireGuard Profiles v1.19.30 v2**.
+4. Vào **Actions** -> **Build Windows Hybrid WireGuard Profiles v1.19.30 v2.1**.
 5. Chờ workflow hoàn tất.
 
 Artifact binary:

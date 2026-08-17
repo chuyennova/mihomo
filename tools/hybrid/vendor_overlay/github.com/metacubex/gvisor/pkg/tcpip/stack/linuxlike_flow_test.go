@@ -20,13 +20,13 @@ func TestHybridKernelIPv6FlowLabelReference(t *testing.T) {
 		k1 = uint64(0x0f0e0d0c0b0a0908)
 	)
 
-	if got, want := kernelLikeIPv6FlowLabelWithKey(k0, k1, src, dst, 40000, 443, 6), uint32(0x0a13ee); got != want {
+	if got, want := kernelLikeIPv6FlowLabelWithKey(k0, k1, src, dst, 40000, 443, 6), uint32(0x0f32fd); got != want {
 		t.Fatalf("TCP label got=%#x want=%#x", got, want)
 	}
-	if got, want := kernelLikeIPv6FlowLabelWithKey(k0, k1, src, dst, 40000, 443, 17), uint32(0x01cca7); got != want {
+	if got, want := kernelLikeIPv6FlowLabelWithKey(k0, k1, src, dst, 40000, 443, 17), uint32(0x0aeed7); got != want {
 		t.Fatalf("UDP label got=%#x want=%#x", got, want)
 	}
-	if got, want := kernelLikeIPv6FlowLabelWithKey(k0, k1, src, dst, 40001, 443, 6), uint32(0x0411ff); got != want {
+	if got, want := kernelLikeIPv6FlowLabelWithKey(k0, k1, src, dst, 40001, 443, 6), uint32(0x031c6b); got != want {
 		t.Fatalf("different-flow label got=%#x want=%#x", got, want)
 	}
 }

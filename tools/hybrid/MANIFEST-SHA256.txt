@@ -1,5 +1,5 @@
-7bda06860af9fd4185ceec0363f4e3335a208f56fd90881dc312d85019643710  ./.github/workflows/build-windows-hybrid-v11930.yml
-a2c710bc2c5f5a31cb32cc1cb20ba2517a6ac14d37e8127a2d9eac00bdf13132  ./README_VI.md
+89b73b9572ab3dc61799af734e1a97584119a96142b7654b7bf9968c77385ec9  ./.github/workflows/build-windows-hybrid-v11930.yml
+d5b333abbefb4101e69a3d3c80c5defe26b728bacb27ea243b76e50d3a624ff7  ./README_VI.md
 be68f19eb83bdfde61f152fd9ff338182b9138e2da08d981230839ff1fa596ca  ./adapter/outbound/wireguard.go
 6a1506c50a46a4cc57f7bf6b885494134d8775a42ba6f27140858adda966bb7e  ./adapter/outbound/wireguard_profile_gvisor.go
 8064142ec21fb8be0f36787105542938ebfe61a9fc96ed51aa09ea91eeab4824  ./adapter/outbound/wireguard_profile_nogvisor.go
@@ -10,17 +10,18 @@ be68f19eb83bdfde61f152fd9ff338182b9138e2da08d981230839ff1fa596ca  ./adapter/outb
 551b2a5ff26bae8cdba05e90249e883bc0f186b8beba7b7c0ac61873bb613404  ./tools/hybrid/INTEGRATION_REPORT.md
 ac91b88a16d5061a93bcb599bcf79a8cf38a8965eab50c014abbbda9f72e1162  ./tools/hybrid/SOURCE_LOCKS.md
 6072f1f9493c23e6e48403f9c76aae4d50afe7f9ff594b2fb5684fd0b33ea483  ./tools/hybrid/STATIC_CHECK_REPORT.txt
+a08a715bd6259d1003d9a6ec226cee6637a7066e15d48da464fe0caa7a483c1a  ./tools/hybrid/V2_1_FIX_NOTES.md
 cf3b51b2ac4ef437060b826574d7d711308efc6ba8b857a3268fd56d5563d8c0  ./tools/hybrid/apply_vendor_overlay.sh
 67004b9cc59baaf6dd04c9ecfc30bf6fb70c76c0ed91351df03fedc46b3ea328  ./tools/hybrid/ci_run.sh
 76b47b45bbcc0000ade81c5eded96f2e730c44dc925b6a4ed45f5bd08d0b0d88  ./tools/hybrid/example-multi-wireguard.yaml
 91c0c26e9a00af77e8d6a587feeac4aa5a49fb9d2ce7546acfa729faafe8588c  ./tools/hybrid/final_gate.sh
-e007c7da33313a363d980613dc12332abb36126acd5e07df6d6a7fa42397c170  ./tools/hybrid/finalize_logs.sh
+0f6b3b508e3bdb6d54e6dd163d2b754df5628966d0a6169297d6891420558843  ./tools/hybrid/finalize_logs.sh
 f2313bba85566445488d0349922f4e07f9bbef0427af0d6be088130790d1e032  ./tools/hybrid/steps/compile.sh
 c245de58e04edf831888050cae4e9cad89bfcb5dabc631ca96a5646638554beb  ./tools/hybrid/steps/environment.sh
 4ee14077c8e5494063ad49a5e583c65a86fd69a617f8c3268d1c4a250b2ebc8b  ./tools/hybrid/steps/gofmt.sh
 6816eb08ef798b6da349420c32a4a949b4d62cff5ad181aa52e469446084f172  ./tools/hybrid/steps/install_tools.sh
 5db2a9e5ab13611d38f16d6db925d04470027260c9a5d2ffaa95d14dd945db0e  ./tools/hybrid/steps/package.sh
-ade5a7d179e44aa95ab710d7075b52a87fb83b255bf2ac2289dfff21063dc611  ./tools/hybrid/steps/profile_audit.sh
+8e4cc6478eb8c3ea20ba78ac6e173c65534fc6df9024ec943b4ae0a9300368f2  ./tools/hybrid/steps/profile_audit.sh
 4f638a9d6e531a3509e203414d69bf9ce108b156ebd525d5d9e288ffc0100fd0  ./tools/hybrid/steps/source_verify.sh
 99ac18afe7a0bfe3f8aab36933d77dc1a8e0756aca0daafcae9d126f86288f8d  ./tools/hybrid/steps/tests.sh
 1a6a3e099ce7143a3e2c2e26b89071ca18c2693c97ee7b8f97d90fcd771bc3fe  ./tools/hybrid/steps/vendor.sh
@@ -29,7 +30,7 @@ ade5a7d179e44aa95ab710d7075b52a87fb83b255bf2ac2289dfff21063dc611  ./tools/hybrid
 25d9a59c823ce707299f12fb9d3be33b56dd1edd76bbf475450d5550c381ebf3  ./tools/hybrid/vendor_overlay/github.com/metacubex/gvisor/pkg/tcpip/network/ipv6/androidlike_flowlabel_test.go
 1302d5544d9c19dae12ef82bcd5291863f3ea4e568f421bbcf7cb7694ca4f902  ./tools/hybrid/vendor_overlay/github.com/metacubex/gvisor/pkg/tcpip/network/ipv6/ipv6.go
 a699d7b4d57fd7c1daefb64af1eef4b4904b1a9672c99fe6054cae95868e1239  ./tools/hybrid/vendor_overlay/github.com/metacubex/gvisor/pkg/tcpip/stack/linuxlike_flow.go
-8979783e74defd01572525ae056857c40d9f4fa4efcc9634e1d0f38ba512ecd7  ./tools/hybrid/vendor_overlay/github.com/metacubex/gvisor/pkg/tcpip/stack/linuxlike_flow_test.go
+d464b394d4f427b0b4670e5e0b133aac39586b670e77e14356a78b7b18bcf575  ./tools/hybrid/vendor_overlay/github.com/metacubex/gvisor/pkg/tcpip/stack/linuxlike_flow_test.go
 d44a4ab0d720007d0526555cc7906237ba55ee4573495f0f02f5c62c88be6f01  ./tools/hybrid/vendor_overlay/github.com/metacubex/gvisor/pkg/tcpip/stack/registration.go
 3efabe2275639a1476323423e10d58734ff89373c8dc7b15138fef4cf5889fd5  ./tools/hybrid/vendor_overlay/github.com/metacubex/gvisor/pkg/tcpip/transport/internal/network/endpoint.go
 7b8ca4c25fcaac01be9908342c80914414a04378a58cc73368e281d88e6b2150  ./tools/hybrid/vendor_overlay/github.com/metacubex/gvisor/pkg/tcpip/transport/tcp/connect.go
