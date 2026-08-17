@@ -1,4 +1,4 @@
-name: Build Windows Hybrid WireGuard Profiles v1.19.30 v2
+name: Build Windows Hybrid WireGuard Profiles v1.19.30 v2.1
 
 on:
   workflow_dispatch:
@@ -17,7 +17,7 @@ concurrency:
 
 env:
   UPSTREAM_TAG: v1.19.30
-  PATCH_REVISION: hybrid-4profiles-v2-v11930
+  PATCH_REVISION: hybrid-4profiles-v2.1-v11930
   GOTOOLCHAIN: local
 
 jobs:
