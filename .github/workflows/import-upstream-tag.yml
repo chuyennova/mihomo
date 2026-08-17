@@ -1,0 +1,58 @@
+name: Import upstream Mihomo tag
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Mihomo version, ví dụ v1.19.31"
+        required: true
+        default: "v1.19.31"
+
+permissions:
+  contents: write
+
+jobs:
+  import:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout fork
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Import upstream tag and create hybrid branch
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          TAG="${{ inputs.version }}"
+          BRANCH="hybrid-${TAG}"
+          UPSTREAM="https://github.com/MetaCubeX/mihomo.git"
+
+          echo "Fetching upstream tag: $TAG"
+
+          git fetch "$UPSTREAM" \
+            "refs/tags/$TAG:refs/tags/$TAG" \
+            --force
+
+          COMMIT="$(git rev-list -n 1 "$TAG")"
+
+          echo "Tag commit: $COMMIT"
+
+          if ! git ls-remote --exit-code --tags origin "refs/tags/$TAG"; then
+            git push origin "refs/tags/$TAG"
+          else
+            echo "Tag $TAG already exists in fork."
+          fi
+
+          if git ls-remote --exit-code --heads origin "$BRANCH"; then
+            echo "ERROR: branch $BRANCH already exists."
+            exit 1
+          fi
+
+          git push origin "${COMMIT}:refs/heads/${BRANCH}"
+
+          echo "Created:"
+          echo "  tag:    $TAG"
+          echo "  branch: $BRANCH"
