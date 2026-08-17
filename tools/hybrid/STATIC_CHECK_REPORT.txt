@@ -1,0 +1,49 @@
+Mihomo v1.19.30 hybrid 4 profiles - static/dry-run verification
+================================================================
+
+Basis
+-----
+Clean source: mihomo v1.19.30
+Clean adapter/outbound/wireguard.go SHA256:
+79e1112faaaf9fc7c5e84bc2811c7f7320c18504a734dc0bf399021f63c50868
+
+Dependency locks
+----------------
+sing-wireguard: 110eac03c3f0
+gVisor:         3cc44cf9ac22
+wireguard-go:   a6cecdd7f57f
+
+Hybrid profiles
+---------------
+windows  -> native Wintun/Winsock, lazy per outbound
+macos    -> profile-aware gVisor
+linux    -> profile-aware gVisor
+android  -> profile-aware gVisor
+omitted  -> upstream v1.19.30 ip-stack path (auto/gvisor/mips)
+
+Checks completed in this environment
+------------------------------------
+[OK] Overlay copied onto clean v1.19.30 dry-run tree.
+[OK] Vendor overlay applied to exact locked original dependency file hashes.
+[OK] 14 profile vendor files copied/created.
+[OK] gofmt parses and formats all shipped Go files with no remaining diff.
+[OK] bash -n passes all shipped shell scripts.
+[OK] GitHub workflow YAML parses successfully.
+[OK] Example YAML parses successfully.
+[OK] verify_hybrid.sh passes on the dry-run patched tree.
+[OK] No SecureRNG().Uint32() pointer-receiver regression.
+[OK] No stale v1.19.29 dependency pins in executable build files.
+[OK] AmneziaWG v3 NewDevice path remains present in WireGuard lazy creation.
+[OK] Android default MTU 1360; other explicit profiles 1408; YAML MTU overrides.
+[OK] Android PMTU override keeps the old Android-like DF-off default on the new gVisor PMTU implementation.
+
+Not claimed locally
+-------------------
+A complete Go module build was not executed in this container because the full
+module graph is not locally cached and direct module DNS/network access is not
+reliable here. The included GitHub Actions workflow performs go mod tidy,
+vendor source-lock verification, targeted tests, Windows cross-test compile,
+full verge-mihomo.exe compile, Wintun packaging, and always-uploaded logs.
+
+The build should only be called release-ready after that workflow passes all
+mandatory steps.

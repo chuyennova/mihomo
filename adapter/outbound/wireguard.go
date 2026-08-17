@@ -54,12 +54,18 @@ type WireGuard struct {
 	tunDevice wireguardDevice
 	resolver  resolver.Resolver
 
-	initOk        atomic.Bool
-	initMutex     sync.Mutex
-	initErr       error
-	option        WireGuardOption
-	connectAddr   M.Socksaddr
-	localPrefixes []netip.Prefix
+	initOk         atomic.Bool
+	closed         atomic.Bool
+	initMutex      sync.Mutex
+	initErr        error // permanent until profile reload (for example invalid IPC configuration)
+	deviceErr      error // transient device creation error, retried with per-outbound backoff
+	deviceRetryAt  time.Time
+	deviceBackoff  time.Duration
+	option         WireGuardOption
+	connectAddr    M.Socksaddr
+	localPrefixes  []netip.Prefix
+	mtu            uint32
+	networkProfile string
 
 	serverAddrMap   map[M.Socksaddr]netip.AddrPort
 	serverAddrTime  atomic.TypedValue[time.Time]
@@ -75,6 +81,7 @@ type WireGuardOption struct {
 	PrivateKey          string `proxy:"private-key"`
 	Workers             int    `proxy:"workers,omitempty"`
 	MTU                 int    `proxy:"mtu,omitempty"`
+	NetworkProfile      string `proxy:"network-profile,omitempty"`
 	UDP                 bool   `proxy:"udp,omitempty"`
 	PersistentKeepalive int    `proxy:"persistent-keepalive,omitempty"`
 
@@ -169,6 +176,62 @@ func (o IPStackOption) validate() error {
 	default:
 		return fmt.Errorf("invalid IP stack congestion controller %q; expected cubic, reno, bbr, or bbr3", o.CongestionController)
 	}
+}
+
+const (
+	wireGuardProfileWindows = "windows"
+	wireGuardProfileMacOS   = "macos"
+	wireGuardProfileLinux   = "linux"
+	wireGuardProfileAndroid = "android"
+)
+
+// normalizeWireGuardNetworkProfile preserves the v1.19.30 upstream behavior
+// when network-profile is omitted. Explicit profiles opt into the hybrid stack.
+func normalizeWireGuardNetworkProfile(profile string) (string, error) {
+	switch strings.ToLower(strings.TrimSpace(profile)) {
+	case "":
+		return "", nil
+	case wireGuardProfileWindows:
+		return wireGuardProfileWindows, nil
+	case wireGuardProfileMacOS:
+		return wireGuardProfileMacOS, nil
+	case wireGuardProfileLinux:
+		return wireGuardProfileLinux, nil
+	case wireGuardProfileAndroid:
+		return wireGuardProfileAndroid, nil
+	default:
+		return "", E.New("invalid network-profile ", profile, "; expected windows, macos, linux or android")
+	}
+}
+
+func validateWireGuardNetworkProfile(profile string, stackOption IPStackOption) error {
+	switch profile {
+	case "":
+		// No profile means use upstream v1.19.30 ip-stack exactly as configured.
+		return nil
+	case wireGuardProfileWindows:
+		if stackOption.Mode != ipStackAuto {
+			return fmt.Errorf("network-profile %q requires ip-stack.mode to be omitted or auto", profile)
+		}
+		return nil
+	case wireGuardProfileMacOS, wireGuardProfileLinux, wireGuardProfileAndroid:
+		if !features.WithGVisor {
+			return fmt.Errorf("network-profile %q requires the with_gvisor build tag", profile)
+		}
+		if stackOption.Mode == ipStackMips {
+			return fmt.Errorf("network-profile %q is incompatible with ip-stack.mode %q", profile, stackOption.Mode)
+		}
+		return nil
+	default:
+		return fmt.Errorf("unsupported WireGuard network profile %q", profile)
+	}
+}
+
+func defaultWireGuardMTU(profile string) int {
+	if profile == wireGuardProfileAndroid {
+		return 1360
+	}
+	return 1408
 }
 
 // ipStack is the mihomo IP stack's packet and socket surface, adapted from
@@ -345,6 +408,19 @@ func (option WireGuardOption) Prefixes() ([]netip.Prefix, error) {
 }
 
 func NewWireGuard(option WireGuardOption) (*WireGuard, error) {
+	profile, profileErr := normalizeWireGuardNetworkProfile(option.NetworkProfile)
+	if profileErr != nil {
+		return nil, profileErr
+	}
+	option.NetworkProfile = profile
+	option.IPStack.normalize()
+	if err := option.IPStack.validate(); err != nil {
+		return nil, err
+	}
+	if err := validateWireGuardNetworkProfile(profile, option.IPStack); err != nil {
+		return nil, err
+	}
+
 	outbound := &WireGuard{
 		Base: NewBase(BaseOption{
 			Name:         option.Name,
@@ -446,44 +522,15 @@ func NewWireGuard(option WireGuardOption) (*WireGuard, error) {
 
 	mtu := option.MTU
 	if mtu == 0 {
-		mtu = 1408
-	}
-	option.IPStack.normalize()
-	if err = option.IPStack.validate(); err != nil {
-		return nil, err
+		mtu = defaultWireGuardMTU(profile)
 	}
 	if len(outbound.localPrefixes) == 0 {
 		return nil, E.New("missing local address")
 	}
-
-	stack, err := newIPStack(option.IPStack, outbound.localPrefixes, uint32(mtu))
-	if err != nil {
-		return nil, E.Cause(err, "create WireGuard stack")
-	}
-	outbound.tunDevice, err = newWireguardDevice(stack)
-	if err != nil {
-		_ = stack.Close()
-		return nil, E.Cause(err, "create WireGuard device")
-	}
-
-	logger := &device.Logger{
-		Verbosef: func(format string, args ...interface{}) {
-			log.SingLogger.Debug(fmt.Sprintf("[WG](%s) %s", option.Name, fmt.Sprintf(format, args...)))
-		},
-		Errorf: func(format string, args ...interface{}) {
-			log.SingLogger.Error(fmt.Sprintf("[WG](%s) %s", option.Name, fmt.Sprintf(format, args...)))
-		},
-	}
-	if option.AmneziaWGOption != nil {
-		outbound.bind.SetParseReserved(false) // AmneziaWG don't need parse reserved
-		if option.AmneziaWGOption.Version == 3 {
-			outbound.device = amneziav3.NewDevice(outbound.tunDevice, outbound.bind, logger, option.Workers)
-		} else {
-			outbound.device = amnezia.NewDevice(outbound.tunDevice, outbound.bind, logger, option.Workers)
-		}
-	} else {
-		outbound.device = device.NewDevice(outbound.tunDevice, outbound.bind, logger, option.Workers)
-	}
+	// Keep configuration parsing side-effect free. The selected stack/device is
+	// created only when this outbound receives its first real connection.
+	outbound.mtu = uint32(mtu)
+	outbound.networkProfile = profile
 
 	var has6 bool
 	for _, address := range outbound.localPrefixes {
@@ -510,6 +557,108 @@ func NewWireGuard(option WireGuardOption) (*WireGuard, error) {
 	return outbound, nil
 }
 
+const (
+	wireGuardDeviceRetryMin = time.Second
+	wireGuardDeviceRetryMax = 30 * time.Second
+)
+
+// createSelectedWireGuardDevice preserves upstream v1.19.30 ip-stack when no
+// network-profile is present and uses the explicit hybrid profile otherwise.
+func (w *WireGuard) createSelectedWireGuardDevice() (wireguardDevice, error) {
+	switch w.networkProfile {
+	case "":
+		stack, err := newIPStack(w.option.IPStack, w.localPrefixes, w.mtu)
+		if err != nil {
+			return nil, E.Cause(err, "create upstream WireGuard IP stack")
+		}
+		device, err := newWireguardDevice(stack)
+		if err != nil {
+			_ = stack.Close()
+			return nil, E.Cause(err, "create upstream WireGuard device")
+		}
+		log.Warnln("[WG](%s) Using upstream ip-stack: mode=%s mtu=%d", w.option.Name, w.option.IPStack.Mode, w.mtu)
+		return device, nil
+	case wireGuardProfileWindows:
+		return newWindowsNetworkProfileDevice(w.option, w.localPrefixes, w.mtu)
+	case wireGuardProfileMacOS, wireGuardProfileLinux, wireGuardProfileAndroid:
+		return newGVisorNetworkProfileDevice(w.option, w.localPrefixes, w.mtu)
+	default:
+		return nil, fmt.Errorf("unsupported WireGuard network profile %q", w.networkProfile)
+	}
+}
+
+// ensureDeviceLocked lazily creates only this outbound's selected network
+// stack and WireGuard engine. The caller must hold initMutex. All retry state
+// belongs to this WireGuard instance, so one outbound cannot poison another.
+func (w *WireGuard) ensureDeviceLocked() error {
+	if w.closed.Load() {
+		return net.ErrClosed
+	}
+	if w.tunDevice != nil && w.device != nil {
+		return nil
+	}
+
+	now := time.Now()
+	if w.deviceErr != nil && now.Before(w.deviceRetryAt) {
+		return w.deviceErr
+	}
+
+	tunDevice, err := w.createSelectedWireGuardDevice()
+	if err != nil {
+		w.deviceErr = E.Cause(err, "create WireGuard device")
+		if w.deviceBackoff == 0 {
+			w.deviceBackoff = wireGuardDeviceRetryMin
+		} else {
+			w.deviceBackoff *= 2
+			if w.deviceBackoff > wireGuardDeviceRetryMax {
+				w.deviceBackoff = wireGuardDeviceRetryMax
+			}
+		}
+		w.deviceRetryAt = now.Add(w.deviceBackoff)
+		return w.deviceErr
+	}
+
+	logger := &device.Logger{
+		Verbosef: func(format string, args ...interface{}) {
+			log.SingLogger.Debug(fmt.Sprintf("[WG](%s) %s", w.option.Name, fmt.Sprintf(format, args...)))
+		},
+		Errorf: func(format string, args ...interface{}) {
+			log.SingLogger.Error(fmt.Sprintf("[WG](%s) %s", w.option.Name, fmt.Sprintf(format, args...)))
+		},
+	}
+
+	w.tunDevice = tunDevice
+	if w.option.AmneziaWGOption != nil {
+		w.bind.SetParseReserved(false)
+		if w.option.AmneziaWGOption.Version == 3 {
+			w.device = amneziav3.NewDevice(w.tunDevice, w.bind, logger, w.option.Workers)
+		} else {
+			w.device = amnezia.NewDevice(w.tunDevice, w.bind, logger, w.option.Workers)
+		}
+	} else {
+		w.device = device.NewDevice(w.tunDevice, w.bind, logger, w.option.Workers)
+	}
+	w.deviceErr = nil
+	w.deviceRetryAt = time.Time{}
+	w.deviceBackoff = 0
+	return nil
+}
+
+func (w *WireGuard) closeDeviceLocked() error {
+	if w.device != nil {
+		w.device.Close()
+		w.device = nil
+		w.tunDevice = nil
+		return nil
+	}
+	if w.tunDevice != nil {
+		err := w.tunDevice.Close()
+		w.tunDevice = nil
+		return err
+	}
+	return nil
+}
+
 func (w *WireGuard) resolve(ctx context.Context, address M.Socksaddr) (netip.AddrPort, error) {
 	if address.Addr.IsValid() {
 		return address.AddrPort(), nil
@@ -533,12 +682,18 @@ func (w *WireGuard) init(ctx context.Context) error {
 }
 
 func (w *WireGuard) init0(ctx context.Context) error {
+	if w.closed.Load() {
+		return net.ErrClosed
+	}
 	if w.initOk.Load() {
 		return nil
 	}
 	w.initMutex.Lock()
 	defer w.initMutex.Unlock()
-	// double check like sync.Once
+	if w.closed.Load() {
+		return net.ErrClosed
+	}
+	// Double check after taking this outbound's private lock.
 	if w.initOk.Load() {
 		return nil
 	}
@@ -558,16 +713,22 @@ func (w *WireGuard) init0(ctx context.Context) error {
 	if debug.Enabled {
 		log.SingLogger.Trace(fmt.Sprintf("[WG](%s) created wireguard ipc conf: \n %s", w.option.Name, ipcConf))
 	}
+	if err = w.ensureDeviceLocked(); err != nil {
+		// Device creation errors are runtime-local and retryable.
+		return err
+	}
 	err = w.device.IpcSet(ipcConf)
 	if err != nil {
 		w.initErr = E.Cause(err, "setup wireguard")
+		_ = w.closeDeviceLocked()
 		return w.initErr
 	}
 	w.serverAddrTime.Store(time.Now())
 
 	err = w.tunDevice.Start()
 	if err != nil {
-		w.initErr = err
+		w.initErr = E.Cause(err, "start wireguard device")
+		_ = w.closeDeviceLocked()
 		return w.initErr
 	}
 
@@ -771,12 +932,15 @@ func (w *WireGuard) genIpcConf(ctx context.Context, updateOnly bool) (string, er
 	return ipcConf, nil
 }
 
-// Close implements C.ProxyAdapter
+// Close implements C.ProxyAdapter.
 func (w *WireGuard) Close() error {
-	if w.device != nil {
-		w.device.Close()
+	w.initMutex.Lock()
+	defer w.initMutex.Unlock()
+	if w.closed.Swap(true) {
+		return nil
 	}
-	return nil
+	w.initOk.Store(false)
+	return w.closeDeviceLocked()
 }
 
 func (w *WireGuard) DialContext(ctx context.Context, metadata *C.Metadata) (_ C.Conn, err error) {
@@ -813,8 +977,18 @@ func (w *WireGuard) ListenPacketContext(ctx context.Context, metadata *C.Metadat
 	if err = w.ResolveUDP(ctx, metadata); err != nil {
 		return nil, err
 	}
-	// The ipStack contract guarantees that a generic UDP wildcard supports both address families.
-	pc, err = w.tunDevice.ListenUDP(ctx, "udp", netip.AddrPort{})
+	network := "udp"
+	if w.networkProfile == wireGuardProfileWindows {
+		switch {
+		case metadata.DstIP.Is4():
+			network = "udp4"
+		case metadata.DstIP.Is6():
+			network = "udp6"
+		default:
+			return nil, E.New("Windows WireGuard system stack requires a resolved UDP destination")
+		}
+	}
+	pc, err = w.tunDevice.ListenUDP(ctx, network, netip.AddrPort{})
 	if err != nil {
 		return nil, err
 	}
