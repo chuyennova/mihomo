@@ -1,0 +1,53 @@
+name: Import upstream v1.19.30
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  import:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout fork
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Import upstream tag and create branch
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          TAG="v1.19.30"
+          BRANCH="hybrid-v1.19.30"
+          UPSTREAM="https://github.com/MetaCubeX/mihomo.git"
+
+          echo "Fetching upstream tag: $TAG"
+
+          git fetch "$UPSTREAM" \
+            "refs/tags/$TAG:refs/tags/$TAG" \
+            --force
+
+          COMMIT="$(git rev-list -n 1 "$TAG")"
+
+          echo "Tag commit: $COMMIT"
+
+          echo "Pushing tag to fork..."
+          git push origin "refs/tags/$TAG"
+
+          echo "Checking branch..."
+          if git ls-remote --exit-code --heads origin "$BRANCH"; then
+            echo "ERROR: branch $BRANCH already exists."
+            exit 1
+          fi
+
+          echo "Creating branch $BRANCH from exact upstream tag $TAG..."
+          git push origin "${COMMIT}:refs/heads/${BRANCH}"
+
+          echo "DONE"
+          echo "Created:"
+          echo "  tag:    $TAG"
+          echo "  branch: $BRANCH"
